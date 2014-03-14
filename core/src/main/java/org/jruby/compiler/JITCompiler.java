@@ -115,13 +115,7 @@ public class JITCompiler implements JITCompilerMBean {
     }
 
     private final JITCounts counts = new JITCounts();
-    private final ExecutorService executor = new ThreadPoolExecutor(
-                    2, // always two threads
-                    2,
-                    0, // never stop
-                    TimeUnit.SECONDS,
-                    new LinkedBlockingQueue<Runnable>(),
-                    new DaemonThreadFactory("JRubyJIT", Thread.MIN_PRIORITY));
+    private final ExecutorService executor;
     
     private final Ruby runtime;
     private final RubyInstanceConfig config;
@@ -129,6 +123,14 @@ public class JITCompiler implements JITCompilerMBean {
     public JITCompiler(Ruby runtime) {
         this.runtime = runtime;
         this.config = runtime.getInstanceConfig();
+
+        this.executor = new ThreadPoolExecutor(
+                2, // always two threads
+                2,
+                0, // never stop
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<Runnable>(),
+                new DaemonThreadFactory("Ruby-" + runtime.getRuntimeNumber() + "-JIT", Thread.MIN_PRIORITY));
         
         runtime.getBeanManager().register(this);
     }
@@ -251,7 +253,7 @@ public class JITCompiler implements JITCompilerMBean {
                     }
                 }
 
-                String key = SexpMaker.create(methodName, method.getArgsNode(), method.getBodyNode());
+                String key = SexpMaker.sha1(methodName, method.getArgsNode(), method.getBodyNode());
                 JITClassGenerator generator = new JITClassGenerator(className, methodName, key, runtime, method, counts);
 
                 Class<Script> sourceClass = (Class<Script>) config.getClassCache().cacheClassByKey(generator.digestString, generator);
@@ -364,9 +366,9 @@ public class JITCompiler implements JITCompilerMBean {
                 // at class level rather than at our runtime level. This makes it impossible to share jitted code
                 // across runtimes.
                 
-                digestString = getHashForString(key) + Math.abs(ruby.hashCode());
+                digestString = key + Math.abs(ruby.hashCode());
             } else {
-                digestString = getHashForString(key);
+                digestString = key;
             }
             this.className = packageName + "/" + className.replace('.', '/') + CLASS_METHOD_DELIMITER + JavaNameMangler.mangleMethodName(methodName) + "_" + digestString;
             this.name = this.className.replaceAll("/", ".");

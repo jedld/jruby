@@ -70,6 +70,7 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import static org.jruby.RubyEnumerator.enumeratorizeWithSize;
 import static org.jruby.runtime.Helpers.invokedynamic;
 import static org.jruby.runtime.Visibility.PRIVATE;
+import static org.jruby.runtime.invokedynamic.MethodNames.DEFAULT;
 import static org.jruby.runtime.invokedynamic.MethodNames.HASH;
 import static org.jruby.RubyEnumerator.SizeFn;
 
@@ -952,9 +953,8 @@ public class RubyHash extends RubyObject implements Map {
         internalPut(key, value);
     }
 
-    public final RubyHash fastASetChained(IRubyObject key, IRubyObject value) {
-        internalPut(key, value);
-        return this;
+    public final void fastASetSmall(IRubyObject key, IRubyObject value) {
+        internalPutSmall(key, value);
     }
     
     public final void fastASetCheckString(Ruby runtime, IRubyObject key, IRubyObject value) {
@@ -970,6 +970,22 @@ public class RubyHash extends RubyObject implements Map {
             op_asetSmallForString(runtime, (RubyString) key, value);
         } else {
             internalPutSmall(key, value);
+        }
+    }
+
+    public final void fastASet(Ruby runtime, IRubyObject key, IRubyObject value, boolean prepareString) {
+        if (prepareString) {
+            fastASetCheckString(runtime, key, value);
+        } else {
+            fastASet(key, value);
+        }
+    }
+
+    public final void fastASetSmall(Ruby runtime, IRubyObject key, IRubyObject value, boolean prepareString) {
+        if (prepareString) {
+            fastASetSmallCheckString(runtime, key, value);
+        } else {
+            fastASetSmall(key, value);
         }
     }
 
@@ -992,8 +1008,13 @@ public class RubyHash extends RubyObject implements Map {
         } else {
             checkIterating();
             if (!key.isFrozen()) {
-                key = key.strDup(runtime, key.getMetaClass().getRealClass());
-                key.setFrozen(true);
+                if (isComparedByIdentity()) {
+                    // when comparing by identity, we don't want to be too eager about deduping
+                    key = key.strDup(runtime, key.getMetaClass().getRealClass());
+                    key.setFrozen(true);
+                } else {
+                    key = runtime.freezeAndDedupString(key);
+                }
             }
             internalPut(key, value, false);
         }
@@ -1005,9 +1026,12 @@ public class RubyHash extends RubyObject implements Map {
             entry.value = value;
         } else {
             checkIterating();
-            if (!key.isFrozen()) {
+            if (isComparedByIdentity()) {
+                // when comparing by identity, we don't want to be too eager about deduping
                 key = key.strDup(runtime, key.getMetaClass().getRealClass());
                 key.setFrozen(true);
+            } else {
+                key = runtime.freezeAndDedupString(key);
             }
             internalPutSmall(key, value, false);
         }
@@ -1083,7 +1107,7 @@ public class RubyHash extends RubyObject implements Map {
     @JRubyMethod(name = "[]", required = 1)
     public IRubyObject op_aref(ThreadContext context, IRubyObject key) {
         IRubyObject value;
-        return ((value = internalGet(key)) == null) ? callMethod(context, "default", key) : value;
+        return ((value = internalGet(key)) == null) ? invokedynamic(context, this, DEFAULT, key) : value;
     }
 
     /** rb_hash_hash
@@ -1843,6 +1867,30 @@ public class RubyHash extends RubyObject implements Map {
         RubyHash clone = (RubyHash) super.rbClone();
         clone.setComparedByIdentity(isComparedByIdentity());
         return clone;
+    }
+
+    /**
+     * A lightweight dup for internal use that does not dispatch to initialize_copy nor rehash the keys. Intended for
+     * use in dup'ing keyword args for processing.
+     *
+     * @param context
+     * @return
+     */
+    public RubyHash dupFast(final ThreadContext context) {
+        final Ruby runtime = context.runtime;
+        RubyHash dup = new RubyHash(runtime, getMetaClass(), this);
+
+        dup.setComparedByIdentity(this.isComparedByIdentity());
+
+        dup.ifNone = this.ifNone;
+
+        if ((this.flags & PROCDEFAULT_HASH_F) != 0) {
+            dup.flags |= PROCDEFAULT_HASH_F;
+        } else {
+            dup.flags &= ~PROCDEFAULT_HASH_F;
+        }
+
+        return dup;
     }
 
     public boolean hasDefaultProc() {

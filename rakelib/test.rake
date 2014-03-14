@@ -29,22 +29,9 @@ namespace :test do
 
   task :rake_targets => long_tests
   
-  task :extended do
-    # cause unit tests to run
-    sh 'mvn -q -Ptest test'
-    
+  task :extended do    
     # run Ruby integration tests
     Rake::Task["test:rake_targets"].invoke
-  end
-
-  task :dist do
-    # run builds and test for dist artifacts
-    sh 'mvn -q -Pdist clean install' or fail 'mvn -Pdist failed'
-    sh 'mvn -q -Pcomplete clean install' or fail 'mvn -Pcomplete failed'
-    sh 'mvn -q -Pmain clean install' or fail 'mvn -Pmain failed'
-    sh 'mvn -q -Pjruby-jars clean install' or fail 'mvn -Pjruby-jars failed'
-    sh 'mvn -q -Pgems clean install' or fail 'mvn -Pgems failed'
-    sh 'mvn -q -Pall clean install' or fail 'mvn -Pall failed'
   end
 
   desc "Run tracing tests"
@@ -80,6 +67,9 @@ namespace :test do
     t.verbose = true
     ENV['EXCLUDE_DIR'] = 'test/mri/excludes'
     t.ruby_opts << '-J-ea'
+    t.ruby_opts << '-I lib/ruby/shared'
+    t.ruby_opts << '-I lib/ruby/2.1'
+    t.ruby_opts << '-I .'
     t.ruby_opts << '-I test/mri'
     t.ruby_opts << '-I test/mri/ruby'
     t.ruby_opts << '-r ./test/mri_test_env.rb'

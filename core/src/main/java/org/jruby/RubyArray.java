@@ -1536,24 +1536,19 @@ public class RubyArray extends RubyObject implements List, RandomAccess {
         return makeShared(begin + realLength - (int) n, (int) n, getRuntime().getArray());
     }
 
-    /** rb_ary_each
-     *
+    /**
+     * mri: rb_ary_each
      */
-    public IRubyObject eachCommon(ThreadContext context, Block block) {
-        if (!block.isGiven()) {
-            throw context.runtime.newLocalJumpErrorNoBlock();
-        }
+    @JRubyMethod
+    public IRubyObject each(ThreadContext context, Block block) {
+        if (!block.isGiven()) return enumeratorizeWithSize(context, this, "each", enumLengthFn());
+
         for (int i = 0; i < realLength; i++) {
             // do not coarsen the "safe" catch, since it will misinterpret AIOOBE from the yielded code.
             // See JRUBY-5434
             block.yield(context, safeArrayRef(values, begin + i));
         }
         return this;
-    }
-
-    @JRubyMethod
-    public IRubyObject each(ThreadContext context, Block block) {
-        return block.isGiven() ? eachCommon(context, block) : enumeratorizeWithSize(context, this, "each", enumLengthFn());
     }
 
     public IRubyObject eachSlice(ThreadContext context, int size, Block block) {
@@ -3008,8 +3003,7 @@ public class RubyArray extends RubyObject implements List, RandomAccess {
     }
 
     private RubyHash makeHash(ThreadContext context, RubyHash hash, Block block) {
-        int myBegin = this.begin;
-        for (int i = myBegin; i < myBegin + realLength; i++) {
+        for (int i = 0; i < realLength; i++) {
             IRubyObject v = elt(i);
             IRubyObject k = block.yield(context, v);
             if (hash.fastARef(k) == null) hash.fastASet(k, v);

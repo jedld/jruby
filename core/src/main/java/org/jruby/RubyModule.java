@@ -85,6 +85,8 @@ import org.jruby.internal.runtime.methods.ProfilingDynamicMethod;
 import org.jruby.internal.runtime.methods.SynchronizedDynamicMethod;
 import org.jruby.internal.runtime.methods.UndefinedMethod;
 import org.jruby.internal.runtime.methods.WrapperMethod;
+import org.jruby.internal.runtime.methods.MethodNodes;
+import org.jruby.internal.runtime.methods.MethodWithNodes;
 import org.jruby.runtime.Helpers;
 import org.jruby.parser.StaticScope;
 import org.jruby.runtime.Arity;
@@ -105,6 +107,7 @@ import org.jruby.runtime.marshal.MarshalStream;
 import org.jruby.runtime.marshal.UnmarshalStream;
 import org.jruby.runtime.opto.Invalidator;
 import org.jruby.runtime.opto.OptoFactory;
+import org.jruby.truffle.TruffleMethod;
 import org.jruby.util.ClassProvider;
 import org.jruby.util.IdUtil;
 import org.jruby.util.TypeConverter;
@@ -1585,7 +1588,7 @@ public class RubyModule extends RubyObject {
     /** rb_mod_init_copy
      * 
      */
-    @JRubyMethod(name = "initialize_copy", required = 1)
+    @JRubyMethod(name = "initialize_copy", required = 1, visibility = Visibility.PRIVATE)
     @Override
     public IRubyObject initialize_copy(IRubyObject original) {
         super.initialize_copy(original);
@@ -3840,21 +3843,21 @@ public class RubyModule extends RubyObject {
     private static void visitMethods(NodeVisitor visitor, RubyModule mod) {
         for (DynamicMethod method : mod.getNonIncludedClass().getMethods().values()) {
             DynamicMethod realMethod = method.getRealMethod();
+            List<Node> args, body;
             if (method instanceof DefaultMethod) {
-                for (Node node : ((DefaultMethod) realMethod).getArgsNode().childNodes()) {
-                    node.accept(visitor);
-                }
-                for (Node node : ((DefaultMethod) realMethod).getBodyNode().childNodes()) {
-                    node.accept(visitor);
-                }
+                DefaultMethod defaultMethod = ((DefaultMethod) realMethod);
+                args = defaultMethod.getArgsNode().childNodes();
+                body = defaultMethod.getBodyNode().childNodes();
             } else if (method instanceof InterpretedMethod) {
-                for (Node node : ((InterpretedMethod) realMethod).getArgsNode().childNodes()) {
-                    node.accept(visitor);
-                }
-                for (Node node : ((InterpretedMethod) realMethod).getBodyNode().childNodes()) {
-                    node.accept(visitor);
-                }
+                InterpretedMethod interpretedMethod = ((InterpretedMethod) realMethod);
+                args = interpretedMethod.getArgsNode().childNodes();
+                body = interpretedMethod.getBodyNode().childNodes();
+            } else {
+                return;
             }
+
+            for (int i = 0; i < args.size(); i++) args.get(i).accept(visitor);
+            for (int i = 0; i < body.size(); i++) body.get(i).accept(visitor);
         }
     }
 

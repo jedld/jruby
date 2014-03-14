@@ -46,34 +46,10 @@ public class Fixnum extends ImmutableLiteral {
     public int hashCode() {
         return 47 * 7 + (int) (this.value ^ (this.value >>> 32));
     }
-    
+
     @Override
     public boolean equals(Object other) {
         return other instanceof Fixnum && value == ((Fixnum) other).value;
-    }
-
-// ---------- These methods below are used during compile-time optimizations -------
-
-    public Operand computeValue(String methodName, Operand arg) {
-        if (arg instanceof Fixnum) {
-            if (methodName.equals("+")) return new Fixnum(value + ((Fixnum)arg).value);
-            if (methodName.equals("-")) return new Fixnum(value - ((Fixnum)arg).value);
-            if (methodName.equals("*")) return new Fixnum(value * ((Fixnum)arg).value);
-            if (methodName.equals("/")) {
-                Long divisor = ((Fixnum)arg).value;
-                return divisor == 0L ? null : new Fixnum(value / divisor); // If divisor is zero, don't simplify!
-            }
-        } else if (arg instanceof Float) {
-            if (methodName.equals("+")) return new Float(value + ((Float)arg).value);
-            if (methodName.equals("-")) return new Float(value - ((Float)arg).value);
-            if (methodName.equals("*")) return new Float(value * ((Float)arg).value);
-            if (methodName.equals("/")) {
-                Double divisor = ((Float)arg).value;
-                return divisor == 0.0 ? null : new Float(value / divisor); // If divisor is zero, don't simplify!
-            }
-        }
-
-        return null;
     }
 
     @Override
@@ -84,7 +60,7 @@ public class Fixnum extends ImmutableLiteral {
     public long getValue() {
         return value;
     }
-    
+
     @Override
     public String toString() {
         return "Fixnum:" + value;

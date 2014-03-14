@@ -22,11 +22,7 @@ import org.jruby.evaluator.ASTInterpreter;
 import org.jruby.exceptions.JumpException;
 import org.jruby.exceptions.RaiseException;
 import org.jruby.exceptions.Unrescuable;
-import org.jruby.internal.runtime.methods.CallConfiguration;
-import org.jruby.internal.runtime.methods.CompiledIRMethod;
-import org.jruby.internal.runtime.methods.DynamicMethod;
-import org.jruby.internal.runtime.methods.UndefinedMethod;
-import org.jruby.internal.runtime.methods.WrapperMethod;
+import org.jruby.internal.runtime.methods.*;
 import org.jruby.ir.operands.UndefinedValue;
 import org.jruby.javasupport.JavaClass;
 import org.jruby.javasupport.JavaUtil;
@@ -282,16 +278,23 @@ public class Helpers {
 
         return context.runtime.getNil();
     }
-    
-    public static Block createSharedScopeBlock(ThreadContext context, IRubyObject self, int arity, 
+
+    public static Block createSharedScopeBlock(ThreadContext context, IRubyObject self, int arity,
             CompiledBlockCallback callback, boolean hasMultipleArgsHead, int argsNodeType) {
-        
-        return CompiledSharedScopeBlock.newCompiledSharedScopeClosure(context, self, Arity.createArity(arity), 
+
+        return CompiledSharedScopeBlock.newCompiledSharedScopeClosure(context, self, Arity.createArity(arity),
                 context.getCurrentScope(), callback, hasMultipleArgsHead, argsNodeType);
     }
-    
+
     public static IRubyObject def(ThreadContext context, IRubyObject self, Object scriptObject, String rubyName, String javaName, StaticScope scope,
-            int arity, String filename, int line, CallConfiguration callConfig, String parameterDesc) {
+                                  int arity, String filename, int line, CallConfiguration callConfig, String parameterDesc) {
+        // TODO: Need to have access to AST for recompilation. See #1395
+        final MethodNodes methodNodes = MethodNodes.lookup(javaName);
+        return def(context, self, scriptObject, rubyName, javaName, scope, arity, filename, line, callConfig, parameterDesc, methodNodes);
+    }
+
+    public static IRubyObject def(ThreadContext context, IRubyObject self, Object scriptObject, String rubyName, String javaName, StaticScope scope,
+                                  int arity, String filename, int line, CallConfiguration callConfig, String parameterDesc, MethodNodes methodNodes) {
         Class compiledClass = scriptObject.getClass();
         Ruby runtime = context.runtime;
 
@@ -304,13 +307,27 @@ public class Helpers {
                 factory, javaName,
                 rubyName, containingClass, new SimpleSourcePosition(filename, line), arity, scope, newVisibility, scriptObject,
                 callConfig,
-                parameterDesc);
+                parameterDesc,
+                methodNodes);
+
+        // TODO(CS): The MethodNodes don't pass through to the method object correctly - bypass.
+
+        if (method instanceof CompiledMethod) {
+            ((CompiledMethod) method).unsafeSetMethodNodes(methodNodes);
+        }
 
         return addInstanceMethod(containingClass, rubyName, method, currVisibility, context, runtime);
     }
 
     public static IRubyObject defs(ThreadContext context, IRubyObject self, IRubyObject receiver, Object scriptObject, String rubyName, String javaName, StaticScope scope,
-            int arity, String filename, int line, CallConfiguration callConfig, String parameterDesc) {
+                                   int arity, String filename, int line, CallConfiguration callConfig, String parameterDesc) {
+        // TODO: Need to have access to AST for recompilation. See #1395
+        final MethodNodes methodNodes = MethodNodes.lookup(javaName);
+        return defs(context, self, receiver, scriptObject, rubyName, javaName, scope, arity, filename, line, callConfig, parameterDesc, methodNodes);
+    }
+
+    public static IRubyObject defs(ThreadContext context, IRubyObject self, IRubyObject receiver, Object scriptObject, String rubyName, String javaName, StaticScope scope,
+            int arity, String filename, int line, CallConfiguration callConfig, String parameterDesc, MethodNodes methodNodes) {
         Class compiledClass = scriptObject.getClass();
         Ruby runtime = context.runtime;
 
@@ -320,7 +337,13 @@ public class Helpers {
         DynamicMethod method = constructSingletonMethod(
                 factory, rubyName, javaName, rubyClass,
                 new SimpleSourcePosition(filename, line), arity, scope,
-                scriptObject, callConfig, parameterDesc);
+                scriptObject, callConfig, parameterDesc, methodNodes);
+
+        // TODO(CS): The MethodNodes don't pass through to the method object correctly - bypass.
+
+        if (method instanceof CompiledMethod) {
+            ((CompiledMethod) method).unsafeSetMethodNodes(methodNodes);
+        }
         
         rubyClass.addMethod(rubyName, method);
         
@@ -329,9 +352,9 @@ public class Helpers {
         return runtime.newSymbol(rubyName);
     }
 
-    public static byte[] defOffline(String rubyName, String javaName, String classPath, String invokerName, Arity arity, StaticScope scope, CallConfiguration callConfig, String filename, int line) {
+    public static byte[] defOffline(String rubyName, String javaName, String classPath, String invokerName, Arity arity, StaticScope scope, CallConfiguration callConfig, String filename, int line, MethodNodes methodNodes) {
         MethodFactory factory = MethodFactory.createFactory(Helpers.class.getClassLoader());
-        byte[] methodBytes = factory.getCompiledMethodOffline(rubyName, javaName, classPath, invokerName, arity, scope, callConfig, filename, line);
+        byte[] methodBytes = factory.getCompiledMethodOffline(rubyName, javaName, classPath, invokerName, arity, scope, callConfig, filename, line, methodNodes);
 
         return methodBytes;
     }
@@ -428,6 +451,20 @@ public class Helpers {
             map.put(keyValues[i++], keyValues[i++]);
         }
         return map;
+    }
+
+    /**
+     * Should be called on jumps out of blocks.  Inspects the jump, returning or rethrowing as appropriate
+     */
+    public static IRubyObject handleBlockJump(ThreadContext context, JumpException.FlowControlException jump, Block.Type type) {
+        // 'next' and Lambda 'return' are local returns from the block, ending the call or yield
+        if (jump instanceof JumpException.NextJump
+                || (jump instanceof JumpException.ReturnJump && type == Block.Type.LAMBDA)) {
+            return jump.getValue() == null ? context.runtime.getNil() : (IRubyObject)jump.getValue();
+        }
+
+        // other jumps propagate up
+        throw jump;
     }
 
     private static class MethodMissingMethod extends DynamicMethod {
@@ -749,6 +786,7 @@ public class Helpers {
             case REDO:
                 return JumpException.REDO_JUMP;
             case NEXT:
+                if (jumpError.exit_value().isNil()) throw JumpException.NEXT_JUMP;
                 return new JumpException.NextJump(jumpError.exit_value());
             case BREAK:
                 return new JumpException.BreakJump(context.getFrameJumpTarget(), jumpError.exit_value());
@@ -978,7 +1016,7 @@ public class Helpers {
         return isExceptionHandled(currentException, exception1, exception2, context);
     }
 
-    private static boolean checkJavaException(Throwable throwable, IRubyObject catchable, ThreadContext context) {
+    public static boolean checkJavaException(Throwable throwable, IRubyObject catchable, ThreadContext context) {
         Ruby runtime = context.runtime;
         if (
                 // rescue exception needs to catch Java exceptions
@@ -1252,6 +1290,8 @@ public class Helpers {
     }
 
     public static IRubyObject nextJump(IRubyObject value) {
+        if (value.isNil()) throw JumpException.NEXT_JUMP;
+
         throw new JumpException.NextJump(value);
     }
     
@@ -1479,90 +1519,116 @@ public class Helpers {
     public static String[] constructStringArray(String one, String two, String three, String four, String five, String six, String seven, String eight, String nine, String ten) {
         return new String[] {one, two, three, four, five, six, seven, eight, nine, ten};
     }
-    
-    public static final int MAX_SPECIFIC_ARITY_HASH = 3;
-    
-    public static RubyHash constructHash(Ruby runtime, IRubyObject key1, IRubyObject value1) {
+
+    public static final int MAX_SPECIFIC_ARITY_HASH = 5;
+
+    public static RubyHash constructHash(Ruby runtime,
+                                         IRubyObject key1, IRubyObject value1, boolean prepareString1) {
         RubyHash hash = RubyHash.newHash(runtime);
-        hash.fastASetCheckString(runtime, key1, value1);
-        return hash;
-    }
-    
-    public static RubyHash constructHash(Ruby runtime, IRubyObject key1, IRubyObject value1, IRubyObject key2, IRubyObject value2) {
-        RubyHash hash = RubyHash.newHash(runtime);
-        hash.fastASetCheckString(runtime, key1, value1);
-        hash.fastASetCheckString(runtime, key2, value2);
-        return hash;
-    }
-    
-    public static RubyHash constructHash(Ruby runtime, IRubyObject key1, IRubyObject value1, IRubyObject key2, IRubyObject value2, IRubyObject key3, IRubyObject value3) {
-        RubyHash hash = RubyHash.newHash(runtime);
-        hash.fastASetCheckString(runtime, key1, value1);
-        hash.fastASetCheckString(runtime, key2, value2);
-        hash.fastASetCheckString(runtime, key3, value3);
+        hash.fastASet(runtime, key1, value1, prepareString1);
         return hash;
     }
 
-    public static RubyHash constructSmallHash(Ruby runtime, IRubyObject key1, IRubyObject value1) {
+    public static RubyHash constructHash(Ruby runtime,
+                                         IRubyObject key1, IRubyObject value1, boolean prepareString1,
+                                         IRubyObject key2, IRubyObject value2, boolean prepareString2) {
+        RubyHash hash = RubyHash.newHash(runtime);
+        hash.fastASet(runtime, key1, value1, prepareString1);
+        hash.fastASet(runtime, key2, value2, prepareString2);
+        return hash;
+    }
+
+    public static RubyHash constructHash(Ruby runtime,
+                                         IRubyObject key1, IRubyObject value1, boolean prepareString1,
+                                         IRubyObject key2, IRubyObject value2, boolean prepareString2,
+                                         IRubyObject key3, IRubyObject value3, boolean prepareString3) {
+        RubyHash hash = RubyHash.newHash(runtime);
+        hash.fastASet(runtime, key1, value1, prepareString1);
+        hash.fastASet(runtime, key2, value2, prepareString2);
+        hash.fastASet(runtime, key3, value3, prepareString3);
+        return hash;
+    }
+
+    public static RubyHash constructHash(Ruby runtime,
+                                         IRubyObject key1, IRubyObject value1, boolean prepareString1,
+                                         IRubyObject key2, IRubyObject value2, boolean prepareString2,
+                                         IRubyObject key3, IRubyObject value3, boolean prepareString3,
+                                         IRubyObject key4, IRubyObject value4, boolean prepareString4) {
+        RubyHash hash = RubyHash.newHash(runtime);
+        hash.fastASet(runtime, key1, value1, prepareString1);
+        hash.fastASet(runtime, key2, value2, prepareString2);
+        hash.fastASet(runtime, key3, value3, prepareString3);
+        hash.fastASet(runtime, key4, value4, prepareString4);
+        return hash;
+    }
+
+    public static RubyHash constructHash(Ruby runtime,
+                                         IRubyObject key1, IRubyObject value1, boolean prepareString1,
+                                         IRubyObject key2, IRubyObject value2, boolean prepareString2,
+                                         IRubyObject key3, IRubyObject value3, boolean prepareString3,
+                                         IRubyObject key4, IRubyObject value4, boolean prepareString4,
+                                         IRubyObject key5, IRubyObject value5, boolean prepareString5) {
+        RubyHash hash = RubyHash.newHash(runtime);
+        hash.fastASet(runtime, key1, value1, prepareString1);
+        hash.fastASet(runtime, key2, value2, prepareString2);
+        hash.fastASet(runtime, key3, value3, prepareString3);
+        hash.fastASet(runtime, key4, value4, prepareString4);
+        hash.fastASet(runtime, key5, value5, prepareString5);
+        return hash;
+    }
+
+    public static RubyHash constructSmallHash(Ruby runtime,
+                                              IRubyObject key1, IRubyObject value1, boolean prepareString1) {
         RubyHash hash = RubyHash.newSmallHash(runtime);
-        hash.fastASetSmallCheckString(runtime, key1, value1);
+        hash.fastASetSmall(runtime, key1, value1, prepareString1);
         return hash;
     }
 
-    public static RubyHash constructSmallHash(Ruby runtime, IRubyObject key1, IRubyObject value1, IRubyObject key2, IRubyObject value2) {
+    public static RubyHash constructSmallHash(Ruby runtime,
+                                              IRubyObject key1, IRubyObject value1, boolean prepareString1,
+                                              IRubyObject key2, IRubyObject value2, boolean prepareString2) {
         RubyHash hash = RubyHash.newSmallHash(runtime);
-        hash.fastASetSmallCheckString(runtime, key1, value1);
-        hash.fastASetSmallCheckString(runtime, key2, value2);
+        hash.fastASetSmall(runtime, key1, value1, prepareString1);
+        hash.fastASetSmall(runtime, key2, value2, prepareString2);
         return hash;
     }
 
-    public static RubyHash constructSmallHash(Ruby runtime, IRubyObject key1, IRubyObject value1, IRubyObject key2, IRubyObject value2, IRubyObject key3, IRubyObject value3) {
-        RubyHash hash = RubyHash.newHash(runtime);
-        hash.fastASetSmallCheckString(runtime, key1, value1);
-        hash.fastASetSmallCheckString(runtime, key2, value2);
-        hash.fastASetSmallCheckString(runtime, key3, value3);
-        return hash;
-    }
-    
-    public static RubyHash constructHash19(Ruby runtime, IRubyObject key1, IRubyObject value1) {
-        RubyHash hash = RubyHash.newHash(runtime);
-        hash.fastASetCheckString(runtime, key1, value1);
-        return hash;
-    }
-    
-    public static RubyHash constructHash19(Ruby runtime, IRubyObject key1, IRubyObject value1, IRubyObject key2, IRubyObject value2) {
-        RubyHash hash = RubyHash.newHash(runtime);
-        hash.fastASetCheckString(runtime, key1, value1);
-        hash.fastASetCheckString(runtime, key2, value2);
-        return hash;
-    }
-    
-    public static RubyHash constructHash19(Ruby runtime, IRubyObject key1, IRubyObject value1, IRubyObject key2, IRubyObject value2, IRubyObject key3, IRubyObject value3) {
-        RubyHash hash = RubyHash.newHash(runtime);
-        hash.fastASetCheckString(runtime, key1, value1);
-        hash.fastASetCheckString(runtime, key2, value2);
-        hash.fastASetCheckString(runtime, key3, value3);
-        return hash;
-    }
-
-    public static RubyHash constructSmallHash19(Ruby runtime, IRubyObject key1, IRubyObject value1) {
+    public static RubyHash constructSmallHash(Ruby runtime,
+                                              IRubyObject key1, IRubyObject value1, boolean prepareString1,
+                                              IRubyObject key2, IRubyObject value2, boolean prepareString2,
+                                              IRubyObject key3, IRubyObject value3, boolean prepareString3) {
         RubyHash hash = RubyHash.newSmallHash(runtime);
-        hash.fastASetSmallCheckString(runtime, key1, value1);
+        hash.fastASetSmall(runtime, key1, value1, prepareString1);
+        hash.fastASetSmall(runtime, key2, value2, prepareString2);
+        hash.fastASetSmall(runtime, key3, value3, prepareString3);
         return hash;
     }
 
-    public static RubyHash constructSmallHash19(Ruby runtime, IRubyObject key1, IRubyObject value1, IRubyObject key2, IRubyObject value2) {
+    public static RubyHash constructSmallHash(Ruby runtime,
+                                              IRubyObject key1, IRubyObject value1, boolean prepareString1,
+                                              IRubyObject key2, IRubyObject value2, boolean prepareString2,
+                                              IRubyObject key3, IRubyObject value3, boolean prepareString3,
+                                              IRubyObject key4, IRubyObject value4, boolean prepareString4) {
         RubyHash hash = RubyHash.newSmallHash(runtime);
-        hash.fastASetSmallCheckString(runtime, key1, value1);
-        hash.fastASetSmallCheckString(runtime, key2, value2);
+        hash.fastASetSmall(runtime, key1, value1, prepareString1);
+        hash.fastASetSmall(runtime, key2, value2, prepareString2);
+        hash.fastASetSmall(runtime, key3, value3, prepareString3);
+        hash.fastASetSmall(runtime, key4, value4, prepareString4);
         return hash;
     }
 
-    public static RubyHash constructSmallHash19(Ruby runtime, IRubyObject key1, IRubyObject value1, IRubyObject key2, IRubyObject value2, IRubyObject key3, IRubyObject value3) {
+    public static RubyHash constructSmallHash(Ruby runtime,
+                                              IRubyObject key1, IRubyObject value1, boolean prepareString1,
+                                              IRubyObject key2, IRubyObject value2, boolean prepareString2,
+                                              IRubyObject key3, IRubyObject value3, boolean prepareString3,
+                                              IRubyObject key4, IRubyObject value4, boolean prepareString4,
+                                              IRubyObject key5, IRubyObject value5, boolean prepareString5) {
         RubyHash hash = RubyHash.newSmallHash(runtime);
-        hash.fastASetSmallCheckString(runtime, key1, value1);
-        hash.fastASetSmallCheckString(runtime, key2, value2);
-        hash.fastASetSmallCheckString(runtime, key3, value3);
+        hash.fastASetSmall(runtime, key1, value1, prepareString1);
+        hash.fastASetSmall(runtime, key2, value2, prepareString2);
+        hash.fastASetSmall(runtime, key3, value3, prepareString3);
+        hash.fastASetSmall(runtime, key4, value4, prepareString4);
+        hash.fastASetSmall(runtime, key5, value5, prepareString5);
         return hash;
     }
 
@@ -2025,11 +2091,12 @@ public class Helpers {
             Visibility visibility,
             Object scriptObject,
             CallConfiguration callConfig,
-            String parameterDesc) {
+            String parameterDesc,
+            MethodNodes methodNodes) {
         
         DynamicMethod method;
 
-        if (name.equals("initialize") || name.equals("initialize_copy") || visibility == Visibility.MODULE_FUNCTION) {
+        if (name.equals("initialize") || name.equals("initialize_copy") || name.equals("initialize_clone") || name.equals("initialize_dup") || name.equals("respond_to_missing?") || visibility == Visibility.MODULE_FUNCTION) {
             visibility = Visibility.PRIVATE;
         }
         
@@ -2044,7 +2111,8 @@ public class Helpers {
                     scriptObject,
                     callConfig,
                     position,
-                    parameterDesc);
+                    parameterDesc,
+                    methodNodes);
         } else {
             method = factory.getCompiledMethod(
                     containingClass,
@@ -2056,7 +2124,8 @@ public class Helpers {
                     scriptObject,
                     callConfig,
                     position,
-                    parameterDesc);
+                    parameterDesc,
+                    methodNodes);
         }
 
         return method;
@@ -2072,7 +2141,8 @@ public class Helpers {
             StaticScope scope,
             Object scriptObject,
             CallConfiguration callConfig,
-            String parameterDesc) {
+            String parameterDesc,
+            MethodNodes methodNodes) {
         
         if (RubyInstanceConfig.LAZYHANDLES_COMPILE) {
             return factory.getCompiledMethodLazily(
@@ -2085,7 +2155,8 @@ public class Helpers {
                     scriptObject,
                     callConfig,
                     position,
-                    parameterDesc);
+                    parameterDesc,
+                    methodNodes);
         } else {
             return factory.getCompiledMethod(
                     rubyClass,
@@ -2097,7 +2168,8 @@ public class Helpers {
                     scriptObject,
                     callConfig,
                     position,
-                    parameterDesc);
+                    parameterDesc,
+                    methodNodes);
         }
     }
 
@@ -2191,7 +2263,7 @@ public class Helpers {
             runtime.getWarnings().warn(ID.REDEFINING_DANGEROUS, "redefining `" + name + "' may cause serious problem");
         }
 
-        if ("initialize".equals(name) || "initialize_copy".equals(name) || visibility == Visibility.MODULE_FUNCTION) {
+        if ("initialize".equals(name) || "initialize_copy".equals(name) || name.equals("initialize_dup") || name.equals("initialize_clone") || name.equals("respond_to_missing?") || visibility == Visibility.MODULE_FUNCTION) {
             visibility = Visibility.PRIVATE;
         }
 
@@ -2700,7 +2772,9 @@ public class Helpers {
             builder.append("b").append(argsNode.getBlock().getName());
         }
 
-        if (!added) builder.append("NONE");
+        if (!added) {
+          return "NONE";
+        }
 
         return builder.toString();
     }
@@ -2978,7 +3052,7 @@ public class Helpers {
         }
     }
 
-    public static IRubyObject irPostReqdArg(int argIndex, int preReqdArgsCount, int postReqdArgsCount, IRubyObject[] args) {
+    public static IRubyObject irLoadPostReqdArg(int argIndex, int preReqdArgsCount, int postReqdArgsCount, IRubyObject[] args) {
         // FIXME: Missing kwargs 2.0 support (kwArgHashCount value)
         int kwArgHashCount = 0;
         int n = args.length;
@@ -3102,5 +3176,15 @@ public class Helpers {
 
         // not reached
         return null;
+    }
+
+    public static String stringJoin(String delimiter, String[] strings) {
+        if (strings.length == 0) return "";
+        StringBuilder sb = new StringBuilder(strings[0]);
+        for (int i = 1; i < strings.length; i++) {
+            sb.append(delimiter)
+                    .append(strings[i]);
+        }
+        return sb.toString();
     }
 }

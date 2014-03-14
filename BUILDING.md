@@ -28,12 +28,14 @@ This will do all of the following:
 
 * Compile JRuby
 * Build `lib/jruby.jar`, needed for running at command line
-* Install the jruby-launcher gem to provide a native 'jruby' executable.
+* It will install the default gems specifications `lib/ruby/gems/shared/specifications/default/` and the ruby files of those gems in `lib/ruby/shared/` and `lib/ruby/2.1/`.
 
 The environment is now suitable for running Ruby applications.
 
 Bootstrapping only needs to be done once at first entry into a JRuby
 source dump or if you are updating JRuby from a git repository.
+
+The list of the default gems can be found at the beginning of `lib/pom.rb`.
 
 Running JRuby
 -------------
@@ -90,8 +92,23 @@ environment. This will do the following:
 mvn -Pbootstrap
 ```
 
+In case there is a problem with installing the jruby-launcher (due to missing compiler or so) use
+
+```
+mvn -Pbootstrap-no-launcher
+```
+
+
 This only needs to be run once to install these gems or if you update
 one of the gems to a newer version or clean out all installed gems.
+
+### Incremental compiling
+
+After changing Java code, you can recompile quickly by running:
+
+```
+mvn compile
+```
 
 ### Day to Day Testing
 
@@ -114,7 +131,15 @@ And if you are making changes that would affect JRuby's core runtime
 or embedding APIs, you should run JRuby's Java-based unit tests via
 
 ```
-mvn -Ptest test
+mvn -Ptest
+```
+
+There are some maven integration tests (i.e. consistency test if all gems are included, osgi test, etc) for the various distributions of JRuby which can be invoked with
+
+```
+mvn -Pmain -Dinvoker.skip=false
+mvn -Pcomplete -Dinvoker.skip=false
+mvn -Pdist -Dinvoker.skip=false
 ```
 
 ### Just Like CI
@@ -141,6 +166,10 @@ mvn clean install -Pjruby-jars
 ```
 
 this first cleans everything and then starts the new build in one go !
+
+Cleaning the build may be necessary after switching to a different
+version of JRuby (for example, after switching git branches) to ensure
+that everything is rebuilt properly.
 
 NOTE: ```mvn clean``` just cleans the **jruby-core** artifact and the **./lib/jruby.jar** !
 
@@ -179,14 +208,6 @@ mvn -Pjruby-jars
 
 the gem will be in ./maven/jruby-jars/target
 
-### gems - excluding jruby jars gem###
-
-```
-mvn -Pgems
-```
-
-the gem will be in ./maven/gems/*/pkg
-
 ### building ALL packages ###
 
 ```
@@ -210,3 +231,29 @@ mvn clean deploy -Psonatype-oss-release -Prelease
 ```
 
 go to oss.sonatype.org and close the deployment which will check if all 'required' files are in place and then finally push the release to maven central and . . . 
+
+# RUBY-MAVEN #
+
+install/update the gem with (MRI or jruby) - needs version 3.1.1.0.2 or newer
+
+```
+gem install ruby-maven
+```
+
+for the embedded ruby script ruby-maven uses jruby 1.7.10 with MRI or the jruby version launching rmvn
+
+```
+rmvn clean install
+```
+
+regular maven uses the the jruby from the installion, i.e. 9000.dev. this also means that a regular maven run does not depend under the hood on any other jruby versions from maven central.
+
+ruby-maven is just maven with a ruby DSL and it is a stripped version of [tesla-polyglot-cli](https://github.com/tesla/tesla-polyglot) which comes with further DSL like yaml, scala, groovy, etc
+
+running rmvn or tesla-poluglot-cli will generate the pom.xml from pom.rb or Mavenfile (with the accompanied gemspec file).
+
+changes on the scripts in **pom.rb** or **Mavenfile** will work directly with regular maven. any changes with the actual pom DSL needs to be translated to opm.xml via
+
+```
+rmvn validate -Pall
+```

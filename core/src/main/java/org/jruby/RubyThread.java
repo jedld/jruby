@@ -38,6 +38,7 @@ import java.nio.channels.Channel;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
+import java.util.Vector;
 import java.util.WeakHashMap;
 import java.util.HashMap;
 import java.util.List;
@@ -152,7 +153,7 @@ public class RubyThread extends RubyObject implements ExecutionContext {
     private volatile BlockingTask currentBlockingTask;
 
     /** The list of locks this thread currently holds, so they can be released on exit */
-    private final List<Lock> heldLocks = Collections.synchronizedList(new ArrayList<Lock>());
+    private final List<Lock> heldLocks = new Vector<Lock>();
 
     /** Whether or not this thread has been disposed of */
     private volatile boolean disposed = false;
@@ -431,7 +432,7 @@ public class RubyThread extends RubyObject implements ExecutionContext {
         try {
             Thread thread = new Thread(runnable);
             thread.setDaemon(true);
-            thread.setName("Ruby" + thread.getName() + ": " + context.getFile() + ":" + (context.getLine() + 1));
+            thread.setName("Ruby-" + runtime.getRuntimeNumber() + "-" + thread.getName() + ": " + context.getFile() + ":" + (context.getLine() + 1));
             threadImpl = new NativeThread(this, thread);
 
             addToCorrectThreadGroup(context);
@@ -980,7 +981,7 @@ public class RubyThread extends RubyObject implements ExecutionContext {
     
     private synchronized IRubyObject status(Ruby runtime) {
         if (threadImpl.isAlive()) {
-            return RubyString.newStringShared(runtime, status.get().bytes);
+            return runtime.getThreadStatus(status.get());
         } else if (exitingException != null) {
             return runtime.getNil();
         } else {

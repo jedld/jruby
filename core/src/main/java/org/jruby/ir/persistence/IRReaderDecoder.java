@@ -7,12 +7,15 @@
 package org.jruby.ir.persistence;
 
 import java.util.List;
+import java.util.Map;
 import org.jruby.ir.IRScope;
 import org.jruby.ir.IRScopeType;
 import org.jruby.ir.Operation;
 import org.jruby.ir.instructions.Instr;
 import org.jruby.ir.operands.Operand;
 import org.jruby.ir.operands.OperandType;
+import org.jruby.ir.operands.TemporaryVariableType;
+import org.jruby.ir.operands.Variable;
 import org.jruby.parser.StaticScope;
 
 /**
@@ -34,11 +37,21 @@ public interface IRReaderDecoder {
     public byte decodeByte();
     public char decodeChar();
     public int decodeInt();
+    public int decodeIntRaw();
     public long decodeLong();
     public double decodeDouble();
     public float decodeFloat();
 
+    public Variable decodeVariable();
+
+    public List<Instr> decodeInstructionsAt(IRScope scope, int offset);
+    public IRScope getCurrentScope();
+    public Map<String, Operand> getVars();
+
+    public void addScope(IRScope scope);
     public void seek(int headersOffset);
 
     public IRScope decodeScope();
+
+    public TemporaryVariableType decodeTemporaryVariableType();
 }

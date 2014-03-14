@@ -6,10 +6,12 @@ package org.jruby.ir.instructions;
 
 import org.jruby.RubyRegexp;
 import org.jruby.RubyString;
+import org.jruby.ir.IRScope;
 import org.jruby.ir.IRVisitor;
 import org.jruby.ir.Operation;
 import org.jruby.ir.operands.Operand;
 import org.jruby.ir.operands.Variable;
+import org.jruby.ir.runtime.IRRuntimeHelpers;
 import org.jruby.ir.transformations.inlining.InlinerInfo;
 import org.jruby.runtime.Block;
 import org.jruby.runtime.DynamicScope;
@@ -17,6 +19,8 @@ import org.jruby.runtime.ThreadContext;
 import org.jruby.runtime.builtin.IRubyObject;
 
 import java.util.Map;
+
+import static org.jruby.ir.IRFlags.USES_BACKREF_OR_LASTLINE;
 
 public class Match3Instr extends Instr implements ResultInstr, FixedArityInstr {
     private Variable result;
@@ -32,11 +36,11 @@ public class Match3Instr extends Instr implements ResultInstr, FixedArityInstr {
         this.receiver = receiver;
         this.arg = arg;
     }
-    
+
     public Operand getArg() {
         return arg;
     }
-    
+
     public Operand getReceiver() {
         return receiver;
     }
@@ -49,6 +53,12 @@ public class Match3Instr extends Instr implements ResultInstr, FixedArityInstr {
     @Override
     public String toString() {
         return super.toString() + "(" + receiver + ", " + arg + ")";
+    }
+
+    @Override
+    public boolean computeScopeFlags(IRScope scope) {
+        scope.getFlags().add(USES_BACKREF_OR_LASTLINE);
+        return true;
     }
 
     @Override
@@ -76,11 +86,7 @@ public class Match3Instr extends Instr implements ResultInstr, FixedArityInstr {
         RubyRegexp regexp = (RubyRegexp) receiver.retrieve(context, self, currDynScope, temp);
         IRubyObject argValue = (IRubyObject) arg.retrieve(context, self, currDynScope, temp);
 
-        if (argValue instanceof RubyString) {
-            return regexp.op_match19(context, argValue);
-        } else {
-            return argValue.callMethod(context, "=~", regexp);
-        }
+        return IRRuntimeHelpers.match3(context, regexp, argValue);
     }
 
     @Override

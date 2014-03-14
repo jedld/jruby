@@ -2,7 +2,7 @@ package org.jruby.ir.instructions;
 
 import org.jruby.ir.IRVisitor;
 import org.jruby.ir.Operation;
-import org.jruby.ir.operands.BooleanLiteral;
+import org.jruby.ir.operands.UnboxedBoolean;
 import org.jruby.ir.operands.Label;
 import org.jruby.ir.operands.Nil;
 import org.jruby.ir.operands.Operand;
@@ -12,10 +12,10 @@ import org.jruby.runtime.DynamicScope;
 import org.jruby.runtime.ThreadContext;
 import org.jruby.runtime.builtin.IRubyObject;
 
-public class BEQInstr extends BranchInstr implements FixedArityInstr {
+public class BEQInstr extends TwoOperandBranchInstr implements FixedArityInstr {
     public static BranchInstr create(Operand v1, Operand v2, Label jmpTarget) {
-        if (v2 instanceof BooleanLiteral) {
-            return ((BooleanLiteral) v2).isTrue() ? new BTrueInstr(v1, jmpTarget) : new BFalseInstr(v1, jmpTarget);
+        if (v2 instanceof UnboxedBoolean) {
+            return ((UnboxedBoolean) v2).isTrue() ? new BTrueInstr(v1, jmpTarget) : new BFalseInstr(v1, jmpTarget);
         }
         if (v2 instanceof Nil) return new BNilInstr(v1, jmpTarget);
         if (v2 == UndefinedValue.UNDEFINED) return new BUndefInstr(v1, jmpTarget);

@@ -1,5 +1,7 @@
 package org.jruby.ir.instructions;
 
+import org.jruby.ir.IRFlags;
+import org.jruby.ir.IRScope;
 import org.jruby.ir.IRVisitor;
 import org.jruby.ir.Operation;
 import org.jruby.ir.operands.GlobalVariable;
@@ -15,14 +17,27 @@ public class GetGlobalVariableInstr extends GetInstr  implements FixedArityInstr
     public GetGlobalVariableInstr(Variable dest, String gvarName) {
         this(dest, new GlobalVariable(gvarName));
     }
-    
+
     public GetGlobalVariableInstr(Variable dest, GlobalVariable gvar) {
-        super(Operation.GET_GLOBAL_VAR, dest, gvar, null); 
+        super(Operation.GET_GLOBAL_VAR, dest, gvar, null);
     }
 
     @Override
     public Operand[] getOperands() {
         return new Operand[] { getSource() };
+    }
+
+    public boolean computeScopeFlags(IRScope scope) {
+        String name = ((GlobalVariable) getSource()).getName();
+
+        if (name.equals("$_") || name.equals("$~") || name.equals("$`") || name.equals("$'") ||
+            name.equals("$+") || name.equals("$LAST_READ_LINE") || name.equals("$LAST_MATCH_INFO") ||
+            name.equals("$PREMATCH") || name.equals("$POSTMATCH") || name.equals("$LAST_PAREN_MATCH")) {
+            scope.getFlags().add(IRFlags.USES_BACKREF_OR_LASTLINE);
+            return true;
+        }
+
+        return false;
     }
 
     @Override

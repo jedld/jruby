@@ -36,6 +36,7 @@
 package org.jruby.runtime;
 
 import java.lang.ref.WeakReference;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -56,6 +57,7 @@ import org.jruby.internal.runtime.methods.DynamicMethod;
 import org.jruby.lexer.yacc.ISourcePosition;
 import org.jruby.ext.fiber.ThreadFiber;
 import org.jruby.parser.StaticScope;
+import org.jruby.parser.IRStaticScope;
 import org.jruby.runtime.backtrace.TraceType;
 import org.jruby.runtime.backtrace.TraceType.Gather;
 import org.jruby.runtime.backtrace.BacktraceElement;
@@ -94,7 +96,8 @@ public final class ThreadContext {
     
     private RubyThread thread;
     private RubyThread rootThread; // thread for fiber purposes
-    private WeakReference<ThreadFiber> fiber = new WeakReference<ThreadFiber>(null);
+    private static final WeakReference<ThreadFiber> NULL_FIBER_REF = new WeakReference<ThreadFiber>(null);
+    private WeakReference<ThreadFiber> fiber = NULL_FIBER_REF;
     private ThreadFiber rootFiber; // hard anchor for root threads' fibers
     // Cache format string because it is expensive to create on demand
     private RubyDateFormatter dateFormatter;
@@ -128,6 +131,23 @@ public final class ThreadContext {
     Visibility lastVisibility;
 
     IRubyObject lastExitStatus;
+
+    public final SecureRandom secureRandom;
+
+    private static boolean trySHA1PRNG = true;
+
+    {
+        SecureRandom sr;
+        try {
+            sr = trySHA1PRNG ?
+                    SecureRandom.getInstance("SHA1PRNG") :
+                    new SecureRandom();
+        } catch (Exception e) {
+            trySHA1PRNG = false;
+            sr = new SecureRandom();
+        }
+        secureRandom = sr;
+    }
     
     /**
      * Constructor for Context.
@@ -371,6 +391,14 @@ public final class ThreadContext {
             Continuation c = catchStack[i];
             if (c.tag == tag) return c;
         }
+
+        // if this is a fiber, search prev for tag
+        ThreadFiber fiber = getFiber();
+        ThreadFiber prev;
+        if (fiber != null && (prev = fiber.getData().getPrev()) != null) {
+            return prev.getThread().getContext().getActiveCatch(tag);
+        }
+
         return null;
     }
     
@@ -558,14 +586,14 @@ public final class ThreadContext {
      * @return true if it exists
      *         false if not
      **/
-    public boolean scopeExistsOnCallStack(StaticScope s) {
+    public boolean scopeExistsOnCallStack(int scopeId) {
         DynamicScope[] stack = scopeStack;
         for (int i = scopeIndex; i >= 0; i--) {
-           if (stack[i].getStaticScope() == s) return true;
+           if (((IRStaticScope)stack[i].getStaticScope()).getScopeId() == scopeId) return true;
         }
         return false;
     }
-    
+
     public String getFrameName() {
         return getCurrentFrame().getName();
     }
@@ -825,17 +853,7 @@ public final class ThreadContext {
     }
     
     public RubyStackTraceElement[] gatherCallerBacktrace() {
-        Thread nativeThread = thread.getNativeThread();
-
-        // Future thread or otherwise unforthgiving thread impl.
-        if (nativeThread == null) return new RubyStackTraceElement[] {};
-
-        BacktraceElement[] copy = new BacktraceElement[backtraceIndex + 1];
-
-        System.arraycopy(backtrace, 0, copy, 0, backtraceIndex + 1);
-        RubyStackTraceElement[] trace = Gather.CALLER.getBacktraceData(this, false).getBacktrace(runtime);
-
-        return trace;
+        return Gather.CALLER.getBacktraceData(this, false).getBacktrace(runtime);
     }
     
     /**
@@ -998,6 +1016,7 @@ public final class ThreadContext {
         pushFrameCopy();
         getCurrentFrame().setSelf(type);
         getCurrentFrame().setVisibility(Visibility.PUBLIC);
+        getCurrentFrame().setName(null);
 
         pushScope(DynamicScope.newDynamicScope(staticScope, null));
     }
@@ -1025,6 +1044,13 @@ public final class ThreadContext {
         if (ssModule == null) ssModule = implClass;
         pushRubyClass(ssModule);
         pushCallFrame(implClass, name, self, block);
+    }
+
+    // FIXME: This may not be correct for RubyClass in all cases
+    public void preMethodFrameAndClass(String name, IRubyObject self, Block block, StaticScope staticScope) {
+        RubyModule ssModule = staticScope.getModule();
+        pushRubyClass(ssModule);
+        pushCallFrame(ssModule, name, self, block);
     }
     
     public void preMethodFrameAndScope(RubyModule clazz, String name, IRubyObject self, Block block, 

@@ -1,0 +1,2 @@
+fails:Assignment via next assigns splatted objects
+fails:Assignment via next assigns splatted objects to a splatted reference via a splatted yield

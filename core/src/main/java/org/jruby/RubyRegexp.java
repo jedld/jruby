@@ -334,6 +334,11 @@ public class RubyRegexp extends RubyObject implements ReOptions, EncodingCapable
     }
 
     // used only by the compiler/interpreter (will set the literal flag)
+    public static RubyRegexp newRegexp(Ruby runtime, ByteList pattern, int options) {
+        return newRegexp(runtime, pattern, RegexpOptions.fromEmbeddedOptions(options));
+    }
+
+    // used only by the compiler/interpreter (will set the literal flag)
     public static RubyRegexp newRegexp(Ruby runtime, ByteList pattern, RegexpOptions options) {
         try {
             return new RubyRegexp(runtime, pattern, (RegexpOptions)options.clone());
@@ -628,7 +633,7 @@ public class RubyRegexp extends RubyObject implements ReOptions, EncodingCapable
         checkUnicodeRange(runtime, code, str, mode);
 
         if (code < 0x80) {
-            Sprintf.sprintf(runtime, to, "\\x%02X", code);
+            if (to != null) Sprintf.sprintf(runtime, to, "\\x%02X", code);
         } else {
             if (to != null) {
                 to.ensure(to.getRealSize() + 6);
@@ -836,6 +841,10 @@ public class RubyRegexp extends RubyObject implements ReOptions, EncodingCapable
     public static void preprocessCheck(Ruby runtime, ByteList bytes) {
         preprocess(runtime, bytes, bytes.getEncoding(), new Encoding[]{null}, ErrorMode.RAISE);
     }
+
+    public static RubyString preprocessDRegexp(Ruby runtime, RubyString[] strings, int embeddedOptions) {
+        return preprocessDRegexp(runtime, strings, RegexpOptions.fromEmbeddedOptions(embeddedOptions));
+    }
     
     // rb_reg_preprocess_dregexp
     public static RubyString preprocessDRegexp(Ruby runtime, IRubyObject[] strings, RegexpOptions options) {
@@ -963,7 +972,7 @@ public class RubyRegexp extends RubyObject implements ReOptions, EncodingCapable
     }
 
     private static final int QUOTED_V = 11;
-    static ByteList quote19(ByteList bs, boolean asciiOnly) {
+    public static ByteList quote19(ByteList bs, boolean asciiOnly) {
         int p = bs.getBegin();
         int end = p + bs.getRealSize();
         byte[]bytes = bs.getUnsafeBytes();
@@ -1213,7 +1222,7 @@ public class RubyRegexp extends RubyObject implements ReOptions, EncodingCapable
 
     /** rb_reg_init_copy
      */
-    @JRubyMethod(required = 1)
+    @JRubyMethod(required = 1, visibility = Visibility.PRIVATE)
     @Override
     public IRubyObject initialize_copy(IRubyObject re) {
         if (this == re) return this;

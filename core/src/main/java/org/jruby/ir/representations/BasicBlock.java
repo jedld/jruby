@@ -17,7 +17,7 @@ import org.jruby.ir.transformations.inlining.CloneMode;
 import org.jruby.ir.transformations.inlining.InlinerInfo;
 import org.jruby.ir.util.ExplicitVertexID;
 
-public class BasicBlock implements ExplicitVertexID {
+public class BasicBlock implements ExplicitVertexID, Comparable {
     private int         id;             // Basic Block id
     private CFG         cfg;            // CFG that this basic block belongs to
     private Label       label;          // All basic blocks have a starting label
@@ -56,7 +56,15 @@ public class BasicBlock implements ExplicitVertexID {
 
     @Override
     public int hashCode() {
-        return label.hashCode();
+        return id;
+    }
+
+    public boolean isEntryBB() {
+        return cfg.getEntryBB() == this;
+    }
+
+    public boolean isExitBB() {
+        return cfg.getExitBB() == this;
     }
 
     public void markRescueEntryBB() {
@@ -65,6 +73,11 @@ public class BasicBlock implements ExplicitVertexID {
 
     public boolean isRescueEntry() {
         return this.isRescueEntry;
+    }
+
+    public void replaceInstrs(List<Instr> instrs) {
+        this.instrs = instrs;
+        this.instrsArray = null;
     }
 
     public void addInstr(Instr i) {
@@ -138,18 +151,13 @@ public class BasicBlock implements ExplicitVertexID {
 
             for (Instr i: oldInstrs) {
                 Instr clonedInstr = i.cloneForInlining(ii);
-                if (clonedInstr == null)  {
-                    System.out.println("i: " + i);
-                    System.out.println("clonedInstr: " + clonedInstr);
-                } else {
-                    clonedInstr.setIPC(i.getIPC());
-                    if (clonedInstr instanceof CallBase) {
-                        CallBase call = (CallBase)clonedInstr;
-                        Operand block = call.getClosureArg(null);
-                        if (block instanceof WrappedIRClosure) cfg.getScope().addClosure(((WrappedIRClosure)block).getClosure());
-                    }
-                    instrs.add(clonedInstr);
+                clonedInstr.setIPC(i.getIPC());
+                if (clonedInstr instanceof CallBase) {
+                    CallBase call = (CallBase)clonedInstr;
+                    Operand block = call.getClosureArg(null);
+                    if (block instanceof WrappedIRClosure) cfg.getScope().addClosure(((WrappedIRClosure)block).getClosure());
                 }
+                instrs.add(clonedInstr);
             }
         }
 
@@ -177,6 +185,16 @@ public class BasicBlock implements ExplicitVertexID {
         }
 
         return clonedBB;
+    }
+
+    @Override
+    public int compareTo(Object o) {
+        BasicBlock other = (BasicBlock) o;
+
+        if (id == other.id) return 0;
+        if (id < other.id) return -1;
+
+        return 1;
     }
 
     @Override

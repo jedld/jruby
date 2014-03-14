@@ -18,11 +18,11 @@ import java.util.Map;
 import org.jruby.ir.operands.Fixnum;
 import org.jruby.ir.operands.StringLiteral;
 
-public class BuildLambdaInstr extends Instr implements ResultInstr, FixedArityInstr {
+public class BuildLambdaInstr extends Instr implements ResultInstr, FixedArityInstr, ClosureAcceptingInstr {
     /** The position for the block */
     private final ISourcePosition position;
     private Variable result;
-    private final WrappedIRClosure lambdaBody;
+    private WrappedIRClosure lambdaBody;
 
     public BuildLambdaInstr(Variable lambda, WrappedIRClosure lambdaBody, ISourcePosition position) {
         super(Operation.LAMBDA);
@@ -31,7 +31,7 @@ public class BuildLambdaInstr extends Instr implements ResultInstr, FixedArityIn
         this.lambdaBody = lambdaBody;
         this.position = position;
     }
-    
+
     public String getLambdaBodyName() {
         return getLambdaBody().getClosure().getName();
     }
@@ -39,7 +39,7 @@ public class BuildLambdaInstr extends Instr implements ResultInstr, FixedArityIn
     public Operand[] getOperands() {
         return new Operand[] { lambdaBody, new StringLiteral(position.getFile()), new Fixnum(position.getLine()) };
     }
-    
+
     public ISourcePosition getPosition() {
         return position;
     }
@@ -62,16 +62,17 @@ public class BuildLambdaInstr extends Instr implements ResultInstr, FixedArityIn
 
     @Override
     public void simplifyOperands(Map<Operand, Operand> valueMap, boolean force) {
-        Operand[] operands = getOperands();
-        for (int i = 0; i < operands.length; i++) {
-            operands[i] = operands[i].getSimplifiedOperand(valueMap, force);
-        }
+        lambdaBody = (WrappedIRClosure) lambdaBody.getSimplifiedOperand(valueMap, force);
     }
 
     private WrappedIRClosure getLambdaBody() {
         return lambdaBody;
     }
-    
+
+    public Operand getClosureArg() {
+        return lambdaBody;
+    }
+
     @Override
     public Object interpret(ThreadContext context, DynamicScope currDynScope, IRubyObject self, Object[] temp, Block aBlock) {
         // SSS FIXME: Copied this from ast/LambdaNode ... Is this required here as well?
@@ -90,5 +91,10 @@ public class BuildLambdaInstr extends Instr implements ResultInstr, FixedArityIn
     @Override
     public void visit(IRVisitor visitor) {
         visitor.BuildLambdaInstr(this);
+    }
+
+    @Override
+    public String toString() {
+        return "" + ((ResultInstr)this).getResult() + " = lambda(" + lambdaBody + ")";
     }
 }

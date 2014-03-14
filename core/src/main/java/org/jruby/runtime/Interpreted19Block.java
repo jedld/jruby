@@ -156,8 +156,8 @@ public class Interpreted19Block  extends ContextAwareBlockBody {
             setupBlockArg(context, value, self, Block.NULL_BLOCK, type);
 
             return evalBlockBody(context, binding, self);
-        } catch (JumpException.NextJump nj) {
-            return handleNextJump(context, nj, type);
+        } catch (JumpException.FlowControlException jump) {
+            return Helpers.handleBlockJump(context, jump, type);
         } finally {
             post(context, binding, oldVis, lastFrame);
         }
@@ -195,8 +195,8 @@ public class Interpreted19Block  extends ContextAwareBlockBody {
 
             // This while loop is for restarting the block call in case a 'redo' fires.
             return evalBlockBody(context, binding, self);
-        } catch (JumpException.NextJump nj) {
-            return handleNextJump(context, nj, type);
+        } catch (JumpException.FlowControlException jump) {
+            return Helpers.handleBlockJump(context, jump, type);
         } finally {
             post(context, binding, oldVis, lastFrame);
         }
@@ -221,10 +221,6 @@ public class Interpreted19Block  extends ContextAwareBlockBody {
         binding.getFrame().setSelf(self);
 
         return self;
-    }
-
-    private IRubyObject handleNextJump(ThreadContext context, JumpException.NextJump nj, Block.Type type) {
-        return nj.getValue() == null ? context.runtime.getNil() : (IRubyObject)nj.getValue();
     }
 
     private void setupBlockArg(ThreadContext context, IRubyObject value, IRubyObject self, Block block, Block.Type type) {

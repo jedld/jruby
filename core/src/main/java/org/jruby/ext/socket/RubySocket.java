@@ -49,6 +49,7 @@ import org.jruby.exceptions.RaiseException;
 import org.jruby.runtime.ObjectAllocator;
 import org.jruby.runtime.ThreadContext;
 import org.jruby.runtime.builtin.IRubyObject;
+import org.jruby.runtime.Visibility;
 import org.jruby.util.io.ChannelDescriptor;
 import org.jruby.util.io.ModeFlags;
 import org.jruby.util.io.Sockaddr;
@@ -56,6 +57,8 @@ import org.jruby.util.io.Sockaddr;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.net.InterfaceAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketException;
@@ -67,7 +70,12 @@ import java.nio.channels.ConnectionPendingException;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.Iterator;
+import java.util.List;
 import java.util.regex.Pattern;
+import org.jruby.RubyArray;
 
 /**
  * @author <a href="mailto:ola.bini@ki.se">Ola Bini</a>
@@ -90,6 +98,11 @@ public class RubySocket extends RubyBasicSocket {
         runtime.loadConstantSet(rb_mConstants, Shutdown.class);
         runtime.loadConstantSet(rb_mConstants, TCP.class);
         runtime.loadConstantSet(rb_mConstants, NameInfo.class);
+
+        // this value seems to be hardcoded in MRI to 5 when not defined, but
+        // it is 128 on OS X. We use 128 for now until we can get it added to
+        // jnr-constants.
+        rb_mConstants.setConstant("SOMAXCONN", RubyFixnum.newFixnum(runtime, 128));
 
         // mandatory constants we haven't implemented
         rb_mConstants.setConstant("MSG_OOB", runtime.newFixnum(MSG_OOB));
@@ -153,7 +166,7 @@ public class RubySocket extends RubyBasicSocket {
         return initialize(context, domain, type, protocol);
     }
 
-    @JRubyMethod(name = "initialize")
+    @JRubyMethod(name = "initialize", visibility = Visibility.PRIVATE)
     public IRubyObject initialize19(ThreadContext context, IRubyObject domain, IRubyObject type) {
         Ruby runtime = context.runtime;
 
@@ -166,7 +179,7 @@ public class RubySocket extends RubyBasicSocket {
         return this;
     }
 
-    @JRubyMethod(name = "initialize")
+    @JRubyMethod(name = "initialize", visibility = Visibility.PRIVATE)
     public IRubyObject initialize19(ThreadContext context, IRubyObject domain, IRubyObject type, IRubyObject protocol) {
         Ruby runtime = context.runtime;
 
@@ -199,7 +212,14 @@ public class RubySocket extends RubyBasicSocket {
 
     @JRubyMethod()
     public IRubyObject bind(ThreadContext context, IRubyObject arg) {
-        InetSocketAddress iaddr = Sockaddr.addressFromSockaddr_in(context, arg);
+        InetSocketAddress iaddr = null;
+        
+        if (arg instanceof Addrinfo){
+            Addrinfo addr = (Addrinfo) arg;
+            iaddr = new InetSocketAddress(addr.getInetAddress().getHostAddress(), addr.getPort());
+        } else {
+             iaddr = Sockaddr.addressFromSockaddr_in(context, arg);
+        }
 
         doBind(context, getChannel(), iaddr);
 
@@ -239,6 +259,27 @@ public class RubySocket extends RubyBasicSocket {
     @JRubyMethod(meta = true)
     public static IRubyObject gethostname(ThreadContext context, IRubyObject recv) {
         return SocketUtils.gethostname(context);
+    }
+    
+    @JRubyMethod(meta = true)
+    public static IRubyObject getifaddrs(ThreadContext context, IRubyObject recv) {
+        RubyArray list = RubyArray.newArray(context.runtime);
+        try {
+            Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces();
+            while (en.hasMoreElements()) {
+                NetworkInterface ni = en.nextElement();
+                List<InterfaceAddress> listIa = ni.getInterfaceAddresses();
+                Iterator<InterfaceAddress> it = listIa.iterator();
+                while (it.hasNext()) {
+                    InterfaceAddress ia = it.next();
+                    list.append(new Ifaddr(context.runtime, (RubyClass)context.runtime.getClassFromPath("Socket::Ifaddr"), ni, ia, true));
+                    list.append(new Ifaddr(context.runtime, (RubyClass)context.runtime.getClassFromPath("Socket::Ifaddr"), ni, ia, false));
+                }
+            }
+        } catch (Exception ex) {
+            throw SocketUtils.sockerr(context.runtime, "getifaddrs: " + ex.toString());
+        }
+        return list;
     }
 
     @JRubyMethod(required = 1, rest = true, meta = true)
@@ -550,6 +591,8 @@ public class RubySocket extends RubyBasicSocket {
     }
 
     private SocketAddress addressForChannel(ThreadContext context, IRubyObject arg) {
+        if (arg instanceof Addrinfo) return Sockaddr.addressFromArg(context, arg);
+
         switch (soProtocol) {
             case PF_UNIX:
             case PF_LOCAL:

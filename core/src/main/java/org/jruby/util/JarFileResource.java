@@ -1,56 +1,53 @@
 package org.jruby.util;
 
-import org.jruby.RubyFile;
-
-import java.io.IOException;
-import java.util.zip.ZipEntry;
+import java.util.jar.JarFile;
+import java.util.jar.JarEntry;
 
 /**
- * A file resource that is contained within a jar.
+ * Represents a file in a jar.
+ *
+ * <p>
+ * Note: while directories can be contained within a jar, they're still represented by
+ * JarDirectoryResource, since Ruby expects a directory to exist as long as any files in that
+ * directory do, or Dir.glob would break.
+ * </p>
  */
-public class JarFileResource extends ZipEntry implements FileResource {
-  public static JarFileResource load(String path) {
-    String sanitized = path.startsWith("file:") ? path.substring(5) : path;
+class JarFileResource extends JarResource {
+  private final JarEntry entry;
 
-    int bang = sanitized.indexOf('!');
-
-    if (bang == -1) {
-      throw new IllegalArgumentException("Expecting a jar containing path, but got: " + sanitized);
-    }
-
-    String jar = sanitized.substring(0, bang);
-    String after = sanitized.substring(bang + 2);
-
-    try {
-      return new JarFileResource(RubyFile.getDirOrFileEntry(jar, after));
-    } catch (IOException ioError) {
-      // Failed to get the file, so returning null, similar to like ZipFile#getEntry does
-      return null;
-    }
-  }
-
-  private JarFileResource(ZipEntry entry) {
-    super(entry);
+  JarFileResource(String jarPath, JarEntry entry) {
+    super(jarPath);
+    this.entry = entry;
   }
 
   @Override
-  public boolean exists() {
-    // ZipEntry always exists
-    return true;
+  public String entryName() {
+    return entry.getName();
+  }
+
+  @Override
+  public boolean isDirectory() {
+    return false;
   }
 
   @Override
   public boolean isFile() {
-    return !isDirectory();
+    return true;
   }
 
   @Override
   public long length() {
-    return getSize();
+    return entry.getSize();
   }
 
   @Override
   public long lastModified() {
-    return getTime();
+    return entry.getTime();
+  }
+
+  @Override
+  public String[] list() {
+    // Files cannot be listed
+    return null;
   }
 }

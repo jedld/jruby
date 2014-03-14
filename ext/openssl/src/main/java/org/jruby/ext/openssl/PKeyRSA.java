@@ -52,6 +52,7 @@ import javax.crypto.Cipher;
 import org.jruby.Ruby;
 import org.jruby.RubyClass;
 import org.jruby.RubyBignum;
+import org.jruby.RubyFile;
 import org.jruby.RubyFixnum;
 import org.jruby.RubyHash;
 import org.jruby.RubyModule;
@@ -66,6 +67,7 @@ import org.jruby.runtime.Block;
 import org.jruby.runtime.ObjectAllocator;
 import org.jruby.runtime.ThreadContext;
 import org.jruby.runtime.builtin.IRubyObject;
+import org.jruby.runtime.Visibility;
 
 /**
  * @author <a href="mailto:ola.bini@ki.se">Ola Bini</a>
@@ -178,7 +180,7 @@ public class PKeyRSA extends PKey {
         }
     }
 
-    @JRubyMethod(rest = true)
+    @JRubyMethod(rest = true, visibility = Visibility.PRIVATE)
     public IRubyObject initialize(IRubyObject[] args, Block block) {
         IRubyObject arg;
         IRubyObject pass = null;
@@ -203,7 +205,12 @@ public class PKeyRSA extends PKey {
                     passwd = pass.toString().toCharArray();
                 }
                 arg = OpenSSLImpl.to_der_if_possible(arg);
-                RubyString str = arg.convertToString();
+                RubyString str;
+                if (arg instanceof RubyFile) {
+                    str = (RubyString)((RubyFile)arg.dup()).read(getRuntime().getCurrentContext());
+                } else {
+                    str = arg.convertToString();
+                }
 
                 Object val = null;
                 KeyFactory fact = null;

@@ -26,12 +26,12 @@ public class ReceivePostReqdArgInstr extends ReceiveArgBase implements FixedArit
         this.preReqdArgsCount = preReqdArgsCount;
         this.postReqdArgsCount = postReqdArgsCount;
     }
-    
+
     @Override
     public Operand[] getOperands() {
         return new Operand[] { new Fixnum(argIndex), new Fixnum(preReqdArgsCount), new Fixnum(postReqdArgsCount) };
     }
-    
+
     @Override
     public String toString() {
         return (isDead() ? "[DEAD]" : "") + (hasUnusedResult() ? "[DEAD-RESULT]" : "") + getResult() + " = " + getOperation() + "(" + argIndex + ", " + preReqdArgsCount + ", " + postReqdArgsCount + ")";
@@ -40,6 +40,7 @@ public class ReceivePostReqdArgInstr extends ReceiveArgBase implements FixedArit
     @Override
     public Instr cloneForInlining(InlinerInfo ii) {
         switch (ii.getCloneMode()) {
+            case ENSURE_BLOCK_CLONE:
             case NORMAL_CLONE:
                 return new ReceivePostReqdArgInstr(ii.getRenamedVariable(result), argIndex, preReqdArgsCount, postReqdArgsCount);
             default:
@@ -60,14 +61,12 @@ public class ReceivePostReqdArgInstr extends ReceiveArgBase implements FixedArit
         }
     }
 
-    public IRubyObject receivePostReqdArg(IRubyObject[] args, int kwArgHashCount) {
+    public IRubyObject receivePostReqdArg(IRubyObject[] args) {
         int n = args.length;
-        int remaining = n - preReqdArgsCount - kwArgHashCount;
-        if (remaining <= argIndex) {
-            return null;  // For blocks!
-        } else {
-            return (remaining > postReqdArgsCount) ? args[n - postReqdArgsCount - kwArgHashCount + argIndex] : args[preReqdArgsCount + argIndex];
-        }
+        int remaining = n - preReqdArgsCount;
+        if (remaining <= argIndex) return null;  // For blocks!
+
+        return (remaining > postReqdArgsCount) ? args[n - postReqdArgsCount + argIndex] : args[preReqdArgsCount + argIndex];
     }
 
     @Override

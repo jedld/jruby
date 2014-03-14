@@ -36,6 +36,7 @@
 package org.jruby;
 
 import jnr.constants.platform.OpenFlags;
+import jnr.posix.POSIX;
 import org.jcodings.Encoding;
 import org.jruby.util.io.ModeFlags;
 import org.jruby.util.io.OpenFile;
@@ -54,6 +55,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.util.Enumeration;
+import java.util.jar.JarFile;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -73,13 +75,14 @@ import static org.jruby.runtime.Visibility.*;
 import org.jruby.runtime.builtin.IRubyObject;
 import org.jruby.runtime.encoding.EncodingCapable;
 import org.jruby.util.ByteList;
+import org.jruby.util.FileResource;
+import org.jruby.util.JRubyFile;
+import org.jruby.util.TypeConverter;
 import org.jruby.util.io.DirectoryAsFileException;
 import org.jruby.util.io.PermissionDeniedException;
 import org.jruby.util.io.Stream;
 import org.jruby.util.io.ChannelStream;
 import org.jruby.util.io.IOOptions;
-import org.jruby.util.JRubyFile;
-import org.jruby.util.TypeConverter;
 import org.jruby.util.io.BadDescriptorException;
 import org.jruby.util.io.FileExistsException;
 import org.jruby.util.io.InvalidValueException;
@@ -1055,8 +1058,8 @@ public class RubyFile extends RubyIO implements EncodingCapable {
         return runtime.newFixnum(args.length - 2);
     }
     
-    @JRubyMethod(name = {"unlink", "delete"}, rest = true, meta = true)
-    public static IRubyObject unlink(ThreadContext context, IRubyObject recv, IRubyObject[] args) {
+    @JRubyMethod(rest = true, meta = true)
+    public static IRubyObject delete(ThreadContext context, IRubyObject recv, IRubyObject[] args) {
         Ruby runtime = context.runtime;
          
         for (int i = 0; i < args.length; i++) {
@@ -1080,6 +1083,40 @@ public class RubyFile extends RubyIO implements EncodingCapable {
         }
         
         return runtime.newFixnum(args.length);
+    }
+
+    @JRubyMethod(rest = true, meta = true)
+    public static IRubyObject unlink(ThreadContext context, IRubyObject recv, IRubyObject[] args) {
+        Ruby runtime = context.runtime;
+        POSIX posix = runtime.getPosix();
+
+        if (!posix.isNative()) return delete(context, recv, args);
+
+        for (int i = 0; i < args.length; i++) {
+            RubyString filename = get_path(context, args[i]);
+            JRubyFile lToDelete = JRubyFile.create(runtime.getCurrentDirectory(), filename.getUnicodeValue());
+
+            boolean isSymlink = RubyFileTest.symlink_p(recv, filename).isTrue();
+            // Broken symlinks considered by exists() as non-existing,
+            // so we need to check for symlinks explicitly.
+            if (!lToDelete.exists() && !isSymlink) {
+                throw runtime.newErrnoENOENTError(filename.getUnicodeValue());
+            }
+
+            if (lToDelete.isDirectory() && !isSymlink) {
+                throw runtime.newErrnoEPERMError(filename.getUnicodeValue());
+            }
+
+            if (posix.unlink(lToDelete.getAbsolutePath()) < 0) {
+                throw runtime.newErrnoFromInt(posix.errno());
+            }
+        }
+
+        return runtime.newFixnum(args.length);
+    }
+
+    public static IRubyObject unlink(ThreadContext context, IRubyObject... args) {
+        return unlink(context, context.runtime.getFile(), args);
     }
 
     @JRubyMethod
@@ -1374,17 +1411,18 @@ public class RubyFile extends RubyIO implements EncodingCapable {
     
     private static final ByteList FILE_URL_START = ByteList.create("file:");
 
+
     /**
      * Get the fully-qualified JRubyFile object for the path, taking into
      * account the runtime's current directory.
      */
-    public static JRubyFile file(IRubyObject pathOrFile) {
+    public static FileResource fileResource(IRubyObject pathOrFile) {
         Ruby runtime = pathOrFile.getRuntime();
 
         if (pathOrFile instanceof RubyFile) {
-            return JRubyFile.create(runtime.getCurrentDirectory(), ((RubyFile) pathOrFile).getPath());
+            return JRubyFile.createResource(runtime, ((RubyFile) pathOrFile).getPath());
         } else if (pathOrFile instanceof RubyIO) {
-            return JRubyFile.create(runtime.getCurrentDirectory(), ((RubyIO) pathOrFile).openFile.getPath());
+            return JRubyFile.createResource(runtime, ((RubyIO) pathOrFile).openFile.getPath());
         } else {
             RubyString pathStr = get_path(runtime.getCurrentContext(), pathOrFile);
             ByteList pathByteList = pathStr.getByteList();
@@ -1396,11 +1434,16 @@ public class RubyFile extends RubyIO implements EncodingCapable {
                     path = pathParts[1];
                 }
 
-                return JRubyFile.create(runtime.getCurrentDirectory(), path);
+                return JRubyFile.createResource(runtime, path);
             }
 
-            return JRubyFile.create(runtime.getCurrentDirectory(), pathStr.toString());
+            return JRubyFile.createResource(runtime, pathStr.toString());
         }
+    }
+
+    @Deprecated // Use fileResource instead
+    public static JRubyFile file(IRubyObject pathOrFile) {
+      return fileResource(pathOrFile).hackyGetJRubyFile();
     }
 
     @Override
@@ -1421,10 +1464,13 @@ public class RubyFile extends RubyIO implements EncodingCapable {
         }
         return entry;
     }
-
+    
     public static ZipEntry getDirOrFileEntry(String jar, String path) throws IOException {
+        return getDirOrFileEntry(new JarFile(jar), path);
+    }    
+    
+    public static ZipEntry getDirOrFileEntry(ZipFile zf, String path) throws IOException {
         String dirPath = path + "/";
-        ZipFile zf = Ruby.getGlobalRuntime().getCurrentContext().runtime.getLoadService().getJarFile(jar);
         ZipEntry entry = zf.getEntry(dirPath); // first try as directory
         if (entry == null) {
             if (dirPath.length() == 1) {
@@ -1564,6 +1610,12 @@ public class RubyFile extends RubyIO implements EncodingCapable {
         Ruby runtime = context.runtime;
 
         String relativePath = get_path(context, args[0]).getUnicodeValue();
+
+        // Special /dev/null of windows
+        if (Platform.IS_WINDOWS && ("NUL:".equalsIgnoreCase(relativePath) || "NUL".equalsIgnoreCase(relativePath))) {
+            return runtime.newString("//./" + relativePath.substring(0, 3));
+        }
+
         String[] uriParts = splitURI(relativePath);
         String cwd;
 

@@ -8,8 +8,13 @@ import org.jruby.Ruby;
 import org.jruby.RubyBoolean;
 import org.jruby.RubyClass;
 import org.jruby.RubyEncoding;
+import org.jruby.RubyModule;
+import org.jruby.RubyRegexp;
+import org.jruby.RubyString;
 import org.jruby.compiler.impl.SkinnyMethodAdapter;
 import org.jruby.ir.operands.UndefinedValue;
+import org.jruby.ir.runtime.IRRuntimeHelpers;
+import org.jruby.runtime.Block;
 import org.jruby.runtime.Helpers;
 import org.jruby.parser.StaticScope;
 import org.jruby.runtime.ThreadContext;
@@ -65,7 +70,15 @@ public class IRBytecodeAdapter {
 
     public void pushString(ByteList bl) {
         adapter.aload(0);
-        adapter.invokedynamic("string", sig(JVM.OBJECT, ThreadContext.class), Bootstrap.string(), new String(bl.bytes(), RubyEncoding.ISO), bl.getEncoding().getIndex());
+        adapter.invokedynamic("string", sig(RubyString.class, ThreadContext.class), Bootstrap.string(), new String(bl.bytes(), RubyEncoding.ISO), bl.getEncoding().toString());
+    }
+
+    public void pushByteList(ByteList bl) {
+        adapter.invokedynamic("bytelist", sig(ByteList.class), Bootstrap.bytelist(), new String(bl.bytes(), RubyEncoding.ISO), bl.getEncoding().toString());
+    }
+
+    public void pushRegexp(int options) {
+        adapter.invokedynamic("regexp", sig(RubyRegexp.class, ThreadContext.class, RubyString.class), Bootstrap.regexp(), options);
     }
 
     /**
@@ -98,32 +111,36 @@ public class IRBytecodeAdapter {
         adapter.aload(2);
     }
 
+    public void loadArgs() {
+        adapter.aload(3);
+    }
+
     public void storeLocal(int i) {
         adapter.astore(i);
     }
 
-    public void invokeOther(String name, int arity) {
-        adapter.invokedynamic("invoke:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, arity)), Bootstrap.invoke());
+    public void invokeOther(String name, int arity, boolean hasClosure) {
+        if (hasClosure) {
+            adapter.invokedynamic("invoke:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, arity + 2, Block.class)), Bootstrap.invoke());
+        } else {
+            adapter.invokedynamic("invoke:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, JVM.OBJECT, arity)), Bootstrap.invoke());
+        }
     }
 
-    public void invokeSelf(String name, int arity) {
-        adapter.invokedynamic("invokeSelf:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, arity)), Bootstrap.invokeSelf());
+    public void invokeSelf(String name, int arity, boolean hasClosure) {
+        if (hasClosure) {
+            adapter.invokedynamic("invokeSelf:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, arity + 2, Block.class)), Bootstrap.invokeSelf());
+        } else {
+            adapter.invokedynamic("invokeSelf:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, JVM.OBJECT, arity)), Bootstrap.invokeSelf());
+        }
     }
 
-    public void invokeFixnumOp(String name, long value) {
-        adapter.invokedynamic("fixnumOperator:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT)), Bootstrap.invokeFixnumOp(), value, "--dummy--", -1);
+    public void invokeClassSuper(String name) {
+        adapter.invokedynamic("invokeClassSuper:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, JVM.OBJECT_ARRAY, Block.class)), Bootstrap.invokeClassSuper());
     }
 
-    public void invokeSuper(String name, int arity) {
-        adapter.invokedynamic("invokeSuper:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, arity)), new Handle(Opcodes.H_INVOKESTATIC, "dummy", "dummy", "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;J)Ljava/lang/invoke/CallSite;"));
-    }
-
-    public void invokeOtherBoolean(String name, int arity) {
-        adapter.invokedynamic("invoke:" + JavaNameMangler.mangleMethodName(name), sig(boolean.class, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, arity)), new Handle(Opcodes.H_INVOKESTATIC, "dummy", "dummy", "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;J)Ljava/lang/invoke/CallSite;"));
-    }
-
-    public void invokeSelfBoolean(String name, int arity) {
-        adapter.invokedynamic("invokeSelf:" + JavaNameMangler.mangleMethodName(name), sig(boolean.class, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, arity)), new Handle(Opcodes.H_INVOKESTATIC, "dummy", "dummy", "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;J)Ljava/lang/invoke/CallSite;"));
+    public void invokeInstanceSuper(String name) {
+        adapter.invokedynamic("invokeInstanceSuper:" + JavaNameMangler.mangleMethodName(name), sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, JVM.OBJECT, JVM.OBJECT_ARRAY, Block.class)), Bootstrap.invokeInstanceSuper());
     }
 
     public void attrAssign(String name) {
@@ -144,6 +161,10 @@ public class IRBytecodeAdapter {
 
     public void invokeHelper(String name, String sig) {
         adapter.invokestatic(p(Helpers.class), name, sig);
+    }
+
+    public void invokeIRHelper(String name, String sig) {
+        adapter.invokestatic(p(IRRuntimeHelpers.class), name, sig);
     }
 
     public void searchConst(String name) {
@@ -203,8 +224,16 @@ public class IRBytecodeAdapter {
         adapter.getstatic(p(UndefinedValue.class), "UNDEFINED", ci(UndefinedValue.class));
     }
 
+    public void pushHandle(Handle handle) {
+        adapter.getMethodVisitor().visitLdcInsn(handle);
+    }
+
     public void pushHandle(String className, String methodName, int arity) {
         adapter.getMethodVisitor().visitLdcInsn(new Handle(Opcodes.H_INVOKESTATIC, className, methodName, ClassData.SIGS[arity]));
+    }
+
+    public void pushHandleVarargs(String className, String methodName) {
+        adapter.getMethodVisitor().visitLdcInsn(new Handle(Opcodes.H_INVOKESTATIC, className, methodName, ClassData.VARARGS_SIG));
     }
 
     public void mark(org.objectweb.asm.Label label) {
@@ -227,8 +256,19 @@ public class IRBytecodeAdapter {
         adapter.invokedynamic("array", sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, length)), Bootstrap.array());
     }
 
+    public void hash(int length) {
+        adapter.invokedynamic("hash", sig(JVM.OBJECT, params(ThreadContext.class, JVM.OBJECT, length * 2)), Bootstrap.hash());
+    }
+
+    public void objectArray(int length) {
+        adapter.invokedynamic("objectArray", sig(JVM.OBJECT_ARRAY, params(JVM.OBJECT, length)), Bootstrap.objectArray());
+    }
+
     public int newLocal(String name, Type type) {
         int index = variableCount++;
+        if (type == Type.DOUBLE_TYPE || type == Type.LONG_TYPE) {
+            variableCount++;
+        }
         variableTypes.put(index, type);
         variableNames.put(index, name);
         return index;

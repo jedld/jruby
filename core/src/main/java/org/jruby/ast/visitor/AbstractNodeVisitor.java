@@ -26,8 +26,6 @@
  ***** END LICENSE BLOCK *****/
 package org.jruby.ast.visitor;
 
-import java.util.HashSet;
-import java.util.Set;
 import org.jruby.ast.AliasNode;
 import org.jruby.ast.AndNode;
 import org.jruby.ast.ArgsCatNode;
@@ -51,6 +49,7 @@ import org.jruby.ast.ClassVarDeclNode;
 import org.jruby.ast.ClassVarNode;
 import org.jruby.ast.Colon2Node;
 import org.jruby.ast.Colon3Node;
+import org.jruby.ast.ComplexNode;
 import org.jruby.ast.ConstDeclNode;
 import org.jruby.ast.ConstNode;
 import org.jruby.ast.DAsgnNode;
@@ -96,7 +95,6 @@ import org.jruby.ast.NewlineNode;
 import org.jruby.ast.NextNode;
 import org.jruby.ast.NilNode;
 import org.jruby.ast.Node;
-import org.jruby.ast.NotNode;
 import org.jruby.ast.NthRefNode;
 import org.jruby.ast.OpAsgnAndNode;
 import org.jruby.ast.OpAsgnNode;
@@ -106,8 +104,10 @@ import org.jruby.ast.OptArgNode;
 import org.jruby.ast.OrNode;
 import org.jruby.ast.PostExeNode;
 import org.jruby.ast.PreExeNode;
+import org.jruby.ast.RationalNode;
 import org.jruby.ast.RedoNode;
 import org.jruby.ast.RegexpNode;
+import org.jruby.ast.RequiredKeywordArgumentValueNode;
 import org.jruby.ast.RescueBodyNode;
 import org.jruby.ast.RescueNode;
 import org.jruby.ast.RestArgNode;
@@ -138,13 +138,7 @@ import org.jruby.ast.ZSuperNode;
  * Abstract implementation of NodeVisitor that simply walks each node's
  * childNodes() in sequence and returns null from all visit methods.
  */
-public class AbstractNodeVisitor implements NodeVisitor {
-    Set<String> foundVariables = new HashSet<String>();
-    
-    public Set<String> getFoundVariables() {
-        return foundVariables;
-    }
-    
+public class AbstractNodeVisitor implements NodeVisitor {    
     private Object defaultVisit(Node iVisited) {
         for (Node node : iVisited.childNodes()) node.accept(this);
         return null;
@@ -225,6 +219,11 @@ public class AbstractNodeVisitor implements NodeVisitor {
         return defaultVisit(iVisited);
     }
 
+    @Override
+    public Object visitComplexNode(ComplexNode iVisited) {
+        return defaultVisit(iVisited);
+    }
+    
     @Override
     public Object visitConstDeclNode(ConstDeclNode iVisited) {
         return defaultVisit(iVisited);
@@ -486,11 +485,6 @@ public class AbstractNodeVisitor implements NodeVisitor {
     }
 
     @Override
-    public Object visitNotNode(NotNode iVisited) {
-        return defaultVisit(iVisited);
-    }
-
-    @Override
     public Object visitNthRefNode(NthRefNode iVisited) {
         return defaultVisit(iVisited);
     }
@@ -536,12 +530,22 @@ public class AbstractNodeVisitor implements NodeVisitor {
     }
 
     @Override
+    public Object visitRationalNode(RationalNode iVisited) {
+        return defaultVisit(iVisited);
+    }
+    
+    @Override
     public Object visitRedoNode(RedoNode iVisited) {
         return defaultVisit(iVisited);
     }
 
     @Override
     public Object visitRegexpNode(RegexpNode iVisited) {
+        return defaultVisit(iVisited);
+    }
+
+    @Override
+    public Object visitRequiredKeywordArgumentValueNode(RequiredKeywordArgumentValueNode iVisited) {
         return defaultVisit(iVisited);
     }
 

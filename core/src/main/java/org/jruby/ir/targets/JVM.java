@@ -1,5 +1,6 @@
 package org.jruby.ir.targets;
 
+import com.headius.invokebinder.Signature;
 import org.jruby.RubyInstanceConfig;
 import org.jruby.parser.StaticScope;
 import org.jruby.runtime.Block;
@@ -13,8 +14,6 @@ import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Type;
 
 import java.io.PrintWriter;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Stack;
 
 import static org.jruby.util.CodegenUtils.ci;
@@ -74,6 +73,34 @@ public class JVM {
         return clsData().method();
     }
 
+    public void pushmethod(String name, Signature signature) {
+        clsData().pushmethod(name, signature);
+        method().startMethod();
+
+        // locals for ThreadContext and self
+        for (int i = 0; i < signature.argCount(); i++) {
+            methodData().local("$" + signature.argName(i), Type.getType(signature.argType(i)));
+        }
+
+        // TODO: this should go into the PushBinding instruction
+        methodData().local("$dynamicScope");
+    }
+
+    public void pushmethodVarargs(String name) {
+        clsData().pushmethodVarargs(name);
+        method().startMethod();
+
+        // locals for ThreadContext and self
+        methodData().local("$context", JVM.THREADCONTEXT_TYPE);
+        methodData().local("$scope", JVM.STATICSCOPE_TYPE);
+        methodData().local("$self");//, JVM.OBJECT_TYPE);
+        methodData().local("$arguments", JVM.OBJECT_ARRAY_TYPE);
+        methodData().local("$block", Type.getType(Block.class));
+
+        // TODO: this should go into the PushBinding instruction
+        methodData().local("$dynamicScope");
+    }
+
     public void pushmethod(String name, int arity) {
         clsData().pushmethod(name, arity);
         method().startMethod();
@@ -112,10 +139,15 @@ public class JVM {
     }
 
     public static final Class OBJECT = IRubyObject.class;
+    public static final Class OBJECT_ARRAY = IRubyObject[].class;
     public static final Class BLOCK = Block.class;
     public static final Class THREADCONTEXT = ThreadContext.class;
     public static final Class STATICSCOPE = StaticScope.class;
     public static final Type OBJECT_TYPE = Type.getType(OBJECT);
+    public static final Type OBJECT_ARRAY_TYPE = Type.getType(OBJECT_ARRAY);
+    public static final Type BOOLEAN_TYPE = Type.BOOLEAN_TYPE;
+    public static final Type DOUBLE_TYPE = Type.DOUBLE_TYPE;
+    public static final Type LONG_TYPE = Type.LONG_TYPE;
     public static final Type BLOCK_TYPE = Type.getType(BLOCK);
     public static final Type THREADCONTEXT_TYPE = Type.getType(THREADCONTEXT);
     public static final Type STATICSCOPE_TYPE = Type.getType(STATICSCOPE);

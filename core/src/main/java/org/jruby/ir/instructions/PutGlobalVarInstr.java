@@ -1,5 +1,7 @@
 package org.jruby.ir.instructions;
 
+import org.jruby.ir.IRFlags;
+import org.jruby.ir.IRScope;
 import org.jruby.ir.IRVisitor;
 import org.jruby.ir.Operation;
 import org.jruby.ir.operands.GlobalVariable;
@@ -14,11 +16,23 @@ public class PutGlobalVarInstr extends PutInstr implements FixedArityInstr {
     public PutGlobalVarInstr(String varName, Operand value) {
         super(Operation.PUT_GLOBAL_VAR, new GlobalVariable(varName), null, value);
     }
-    
+
     @Override
     public Operand[] getOperands() {
         return new Operand[] { getTarget(), getValue() };
-    }    
+    }
+
+    @Override
+    public boolean computeScopeFlags(IRScope scope) {
+        String gvName = ((GlobalVariable) getTarget()).getName();
+
+        if (gvName.equals("$_") || gvName.equals("$~")) {
+            scope.getFlags().add(IRFlags.USES_BACKREF_OR_LASTLINE);
+            return true;
+        }
+
+        return false;
+    }
 
     @Override
     public Instr cloneForInlining(InlinerInfo ii) {

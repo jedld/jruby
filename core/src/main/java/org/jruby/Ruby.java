@@ -104,6 +104,8 @@ import org.jruby.runtime.profile.ProfiledMethod;
 import org.jruby.runtime.profile.ProfileOutput;
 import org.jruby.runtime.scope.ManyVarsDynamicScope;
 import org.jruby.threading.DaemonThreadFactory;
+import org.jruby.truffle.TruffleBridgeImpl;
+import org.jruby.truffle.translator.TranslatorDriver;
 import org.jruby.util.ByteList;
 import org.jruby.util.DefinedMessage;
 import org.jruby.util.IOInputStream;
@@ -123,10 +125,10 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileDescriptor;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.lang.ref.WeakReference;
 import java.net.BindException;
 import java.nio.channels.ClosedChannelException;
 import java.security.AccessControlException;
@@ -145,7 +147,8 @@ import org.jruby.javasupport.proxy.JavaProxyClassFactory;
 import static org.jruby.internal.runtime.GlobalVariable.Scope.*;
 import org.jruby.internal.runtime.methods.CallConfiguration;
 import org.jruby.internal.runtime.methods.JavaMethod;
-import org.jruby.ir.persistence.read.IRReader;
+import org.jruby.ir.persistence.IRReader;
+import org.jruby.ir.persistence.IRReaderFile;
 
 /**
  * The Ruby object represents the top-level of a JRuby "instance" in a given VM.
@@ -810,7 +813,10 @@ public final class Ruby {
     
     public IRubyObject runInterpreter(ThreadContext context, ParseResult parseResult, IRubyObject self) {
        try {
-           if (getInstanceConfig().getCompileMode() == CompileMode.OFFIR) {
+           if (getInstanceConfig().getCompileMode() == CompileMode.TRUFFLE) {
+               assert parseResult instanceof RootNode;
+               return getTruffleBridge().toJRuby(getTruffleBridge().execute(TranslatorDriver.ParserContext.TOP_LEVEL, getTruffleBridge().toTruffle(self), null, (RootNode) parseResult));
+           } else if (getInstanceConfig().getCompileMode() == CompileMode.OFFIR) {
                return Interpreter.getInstance().execute(this, parseResult, self);
            } else {
                assert parseResult instanceof RootNode;
@@ -826,7 +832,10 @@ public final class Ruby {
         assert rootNode != null : "scriptNode is not null";
 
         try {
-            if (getInstanceConfig().getCompileMode() == CompileMode.OFFIR) {
+            if (getInstanceConfig().getCompileMode() == CompileMode.TRUFFLE) {
+                assert rootNode instanceof RootNode;
+                return getTruffleBridge().toJRuby(getTruffleBridge().execute(TranslatorDriver.ParserContext.TOP_LEVEL, getTruffleBridge().toTruffle(self), null, (RootNode) rootNode));
+            } else if (getInstanceConfig().getCompileMode() == CompileMode.OFFIR) {
                 // FIXME: retrieve from IRManager unless lifus does it later
                 return Interpreter.getInstance().execute(this, rootNode, self);
             } else {
@@ -866,6 +875,30 @@ public final class Ruby {
     
     public JITCompiler getJITCompiler() {
         return jitCompiler;
+    }
+
+    public synchronized TruffleBridge getTruffleBridge() {
+        if (truffleBridge == null) {
+            /*
+             * It's possible to remove Truffle classes from the JRuby distribution, so we provide a sensible
+             * explanation when the classes are not found.
+             */
+
+            try {
+                truffleBridge = new TruffleBridgeImpl(this);
+                truffleBridge.init();
+            } catch (NoClassDefFoundError e) {
+                throw new UnsupportedOperationException("Support for Truffle has been removed from this distribution", e);
+            }
+        }
+
+        return truffleBridge;
+    }
+
+    public synchronized void shutdownTruffleBridge() {
+        if (truffleBridge != null) {
+            truffleBridge.shutdown();
+        }
     }
 
     /**
@@ -1141,7 +1174,15 @@ public final class Ruby {
                 RubyInstanceConfig.POOL_TTL,
                 TimeUnit.SECONDS,
                 new SynchronousQueue<Runnable>(),
-                new DaemonThreadFactory("JRubyWorker"));
+                new DaemonThreadFactory("Ruby-" + getRuntimeNumber() + "-Worker"));
+
+        fiberExecutor = new ThreadPoolExecutor(
+                0,
+                Integer.MAX_VALUE,
+                RubyInstanceConfig.FIBER_POOL_TTL,
+                TimeUnit.SECONDS,
+                new SynchronousQueue<Runnable>(),
+                new DaemonThreadFactory("Ruby-" + getRuntimeNumber() + "-Fiber"));
         
         // initialize the root of the class hierarchy completely
         initRoot();
@@ -1189,18 +1230,23 @@ public final class Ruby {
             reflectionWorks = false;
         }
         
-        if (!RubyInstanceConfig.DEBUG_PARSER && reflectionWorks) {
+        if (!RubyInstanceConfig.DEBUG_PARSER && reflectionWorks
+                && getInstanceConfig().getCompileMode() != CompileMode.TRUFFLE) {
             loadService.require("jruby");
         }
 
         // out of base boot mode
         booting = false;
-        
+
         // init Ruby-based kernel
-        initRubyKernel();
+        if (getInstanceConfig().getCompileMode() != CompileMode.TRUFFLE) {
+            initRubyKernel();
+        }
         
         // everything booted, so SizedQueue should be available; set up root fiber
-        ThreadFiber.initRootFiber(tc);
+        if (getInstanceConfig().getCompileMode() != CompileMode.TRUFFLE) {
+            ThreadFiber.initRootFiber(tc);
+        }
         
         if(config.isProfiling()) {
             // additional twiddling for profiled mode
@@ -1648,6 +1694,7 @@ public final class Ruby {
         addLazyBuiltin("yecht.jar", "yecht", "YechtService");
         addLazyBuiltin("io/try_nonblock.jar", "io/try_nonblock", "org.jruby.ext.io.try_nonblock.IOTryNonblockLibrary");
         addLazyBuiltin("pathname_ext.jar", "pathname_ext", "org.jruby.ext.pathname.PathnameLibrary");
+        addLazyBuiltin("truffelize.jar", "truffelize", "org.jruby.ext.truffelize.TruffelizeLibrary");
 
         addLazyBuiltin("mathn/complex.jar", "mathn/complex", "org.jruby.ext.mathn.Complex");
         addLazyBuiltin("mathn/rational.jar", "mathn/rational", "org.jruby.ext.mathn.Rational");
@@ -1825,6 +1872,14 @@ public final class Ruby {
 
     public void setRespondToMethod(DynamicMethod rtm) {
         this.respondTo = rtm;
+    }
+
+    public DynamicMethod getRespondToMissingMethod() {
+        return respondToMissing;
+    }
+
+    public void setRespondToMissingMethod(DynamicMethod rtmm) {
+        this.respondToMissing = rtmm;
     }
     
     public RubyClass getDummy() {
@@ -2544,13 +2599,9 @@ public final class Ruby {
 
         try {
             // Get IR from .ir file
-            InputStream irIn = new FileInputStream(IRFileExpert.getIRPersistedFile(file));
-
-            return IRReader.read(irIn, this);
-        } catch (Exception e) {
-            System.out.println(e);
-
-            // If something gone wrong with ir -
+            return IRReader.load(getIRManager(), new IRReaderFile(getIRManager(), IRFileExpert.getIRPersistedFile(file)));
+        } catch (IOException e) {
+            // FIXME: What is something actually throws IOException
             return parseFileAndGetAST(in, file, scope, lineNumber, false);
         }
     }
@@ -2569,13 +2620,10 @@ public final class Ruby {
         if (!RubyInstanceConfig.IR_READING) return parseFileFromMainAndGetAST(in, file, scope);
         
         try {
-            File irFile = IRFileExpert.getIRPersistedFile(file);
-            InputStream irIn = new FileInputStream(irFile);
-
-            return IRReader.read(irIn, this);
-        } catch (Exception e) {
+            return IRReader.load(getIRManager(), new IRReaderFile(getIRManager(), IRFileExpert.getIRPersistedFile(file)));
+        } catch (IOException e) {
             System.out.println(e);
-
+            e.printStackTrace();
             return parseFileFromMainAndGetAST(in, file, scope);
         }
     }
@@ -2770,8 +2818,6 @@ public final class Ruby {
     }
     
     public void compileAndLoadFile(String filename, InputStream in, boolean wrap) {
-        ThreadContext context = getCurrentContext();
-        String file = context.getFile();
         InputStream readStream = in;
         
         try {
@@ -4237,6 +4283,10 @@ public final class Ruby {
         return executor;
     }
 
+    public ExecutorService getFiberExecutor() {
+        return fiberExecutor;
+    }
+
     public Map<String, DateTimeZone> getTimezoneCache() {
         return timeZoneCache;
     }
@@ -4514,6 +4564,34 @@ public final class Ruby {
     public RubyString getThreadStatus(RubyThread.Status status) {
         return threadStatuses.get(status);
     }
+
+    /**
+     * Given a Ruby string, cache a frozen, duplicated copy of it, or find an
+     * existing copy already prepared. This is used to reduce in-memory
+     * duplication of pre-frozen or known-frozen strings.
+     *
+     * Note that this cache is synchronized against the Ruby instance. This
+     * could cause contention under heavy concurrent load, so a reexamination
+     * of this design might be warranted.
+     *
+     * @param string the string to freeze-dup if an equivalent does not already exist
+     * @return the freeze-duped version of the string
+     */
+    public synchronized RubyString freezeAndDedupString(RubyString string) {
+        WeakReference<RubyString> dedupedRef = dedupMap.get(string);
+        RubyString deduped;
+
+        if (dedupedRef == null || (deduped = dedupedRef.get()) == null) {
+            deduped = string.strDup(this);
+            deduped.setFrozen(true);
+            dedupMap.put(string, new WeakReference<RubyString>(deduped));
+        }
+        return deduped;
+    }
+
+    public int getRuntimeNumber() {
+        return runtimeNumber;
+    }
     
     private void setNetworkStack() {
         try {
@@ -4651,7 +4729,7 @@ public final class Ruby {
             procSysModule, precisionModule, errnoModule;
 
     private DynamicMethod privateMethodMissing, protectedMethodMissing, variableMethodMissing,
-            superMethodMissing, normalMethodMissing, defaultMethodMissing, respondTo;
+            superMethodMissing, normalMethodMissing, defaultMethodMissing, respondTo, respondToMissing;
     
     // record separator var, to speed up io ops that use it
     private GlobalVariable recordSeparatorVar;
@@ -4684,6 +4762,8 @@ public final class Ruby {
     
     // Compilation
     private final JITCompiler jitCompiler;
+
+    private TruffleBridge truffleBridge;
 
     // Note: this field and the following static initializer
     // must be located be in this order!
@@ -4751,6 +4831,9 @@ public final class Ruby {
     
     // A thread pool to use for executing this runtime's Ruby threads
     private ExecutorService executor;
+
+    // A thread pool to use for running fibers
+    private ExecutorService fiberExecutor;
 
     // A global object lock for class hierarchy mutations
     private final Object hierarchyLock = new Object();
@@ -4855,4 +4938,14 @@ public final class Ruby {
     }
     
     private RubyArray emptyFrozenArray;
+
+    /**
+     * A map from Ruby string data to a pre-frozen global version of that string.
+     *
+     * Access must be synchronized.
+     */
+    private WeakHashMap<RubyString, WeakReference<RubyString>> dedupMap = new WeakHashMap<RubyString, WeakReference<RubyString>>();
+
+    private static final AtomicInteger RUNTIME_NUMBER = new AtomicInteger(0);
+    private final int runtimeNumber = RUNTIME_NUMBER.getAndIncrement();
 }

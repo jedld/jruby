@@ -1,44 +1,45 @@
 package org.jruby.ir;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.SortedSet;
-import java.util.TreeSet;
 import org.jruby.ParseResult;
 import org.jruby.RubyInstanceConfig;
 
 import org.jruby.RubyModule;
-import org.jruby.exceptions.Unrescuable;
 import org.jruby.ir.dataflow.DataFlowProblem;
-import org.jruby.ir.instructions.BreakInstr;
 import org.jruby.ir.instructions.CallBase;
 import org.jruby.ir.instructions.CopyInstr;
-import org.jruby.ir.instructions.DefineMetaClassInstr;
-import org.jruby.ir.instructions.GetGlobalVariableInstr;
 import org.jruby.ir.instructions.Instr;
-import org.jruby.ir.instructions.NonlocalReturnInstr;
-import org.jruby.ir.instructions.PutGlobalVarInstr;
 import org.jruby.ir.instructions.ReceiveSelfInstr;
 import org.jruby.ir.instructions.ResultInstr;
 import org.jruby.ir.instructions.Specializeable;
 import org.jruby.ir.instructions.ThreadPollInstr;
-import org.jruby.ir.instructions.ReceiveKeywordArgInstr;
-import org.jruby.ir.instructions.ReceiveKeywordRestArgInstr;
-import org.jruby.ir.listeners.IRScopeListener;
-import org.jruby.ir.operands.GlobalVariable;
+import org.jruby.ir.operands.UnboxedBoolean;
+import org.jruby.ir.operands.Fixnum;
+import org.jruby.ir.operands.Float;
 import org.jruby.ir.operands.Label;
 import org.jruby.ir.operands.LocalVariable;
 import org.jruby.ir.operands.Operand;
 import org.jruby.ir.operands.Self;
-import org.jruby.ir.operands.TemporaryVariable;
+import org.jruby.ir.operands.TemporaryCurrentModuleVariable;
+import org.jruby.ir.operands.TemporaryCurrentScopeVariable;
+import org.jruby.ir.operands.TemporaryBooleanVariable;
+import org.jruby.ir.operands.TemporaryFixnumVariable;
+import org.jruby.ir.operands.TemporaryFloatVariable;
+import org.jruby.ir.operands.TemporaryLocalReplacementVariable;
+import org.jruby.ir.operands.TemporaryLocalVariable;
+import org.jruby.ir.operands.TemporaryVariableType;
 import org.jruby.ir.operands.Variable;
 import org.jruby.ir.passes.AddLocalVarLoadStoreInstructions;
 import org.jruby.ir.passes.CompilerPass;
 import org.jruby.ir.passes.CompilerPassScheduler;
 import org.jruby.ir.passes.DeadCodeElimination;
+import org.jruby.ir.persistence.IRReaderDecoder;
+import org.jruby.ir.passes.UnboxingPass;
 import org.jruby.ir.representations.BasicBlock;
 import org.jruby.ir.representations.CFG;
 import org.jruby.ir.representations.CFGLinearizer;
@@ -46,6 +47,8 @@ import org.jruby.ir.transformations.inlining.CFGInliner;
 import org.jruby.parser.StaticScope;
 import org.jruby.util.log.Logger;
 import org.jruby.util.log.LoggerFactory;
+
+import static org.jruby.ir.IRFlags.*;
 
 /**
  * Right now, this class abstracts the following execution scopes:
@@ -96,11 +99,18 @@ public abstract class IRScope implements ParseResult {
     /** Lexical parent scope */
     private IRScope lexicalParent;
 
+    /** List of (nested) closures in this scope */
+    private List<IRClosure> nestedClosures;
+
+    // Index values to guarantee we don't assign same internal index twice
+    private int nextClosureIndex;
+
+    // List of all scopes this scope contains lexically.  This is not used
+    // for execution, but is used during dry-runs for debugging.
+    private List<IRScope> lexicalChildren;
+
     /** Parser static-scope that this IR scope corresponds to */
     private StaticScope staticScope;
-
-    /** Live version of module within whose context this method executes */
-    private RubyModule containerModule;
 
     /** List of IR instructions for this method */
     private List<Instr> instrList;
@@ -108,21 +118,11 @@ public abstract class IRScope implements ParseResult {
     /** Control flow graph representation of this method's instructions */
     private CFG cfg;
 
-    /** List of (nested) closures in this scope */
-    private List<IRClosure> nestedClosures;
-
     /** Local variables defined in this scope */
     private Set<Variable> definedLocalVars;
 
     /** Local variables used in this scope */
     private Set<Variable> usedLocalVars;
-
-    /** Is %block implicit block arg unused? */
-    private boolean hasUnusedImplicitBlockArg;
-
-    /** %current_module and %current_scope variables */
-    private TemporaryVariable currentModuleVar;
-    private TemporaryVariable currentScopeVar;
 
     /** Map of name -> dataflow problem */
     private Map<String, DataFlowProblem> dfProbs;
@@ -131,129 +131,28 @@ public abstract class IRScope implements ParseResult {
     private List<BasicBlock> linearizedBBList;
     private Map<Integer, Integer> rescueMap;
     protected int temporaryVariableIndex;
+    protected int floatVariableIndex;
+    protected int fixnumVariableIndex;
+    protected int booleanVariableIndex;
 
     /** Keeps track of types of prefix indexes for variables and labels */
     private Map<String, Integer> nextVarIndex;
 
-    // Index values to guarantee we don't assign same internal index twice
-    private int nextClosureIndex;
+    private int instructionsOffsetInfoPersistenceBuffer = -1;
+    private IRReaderDecoder persistenceStore = null;
+    private TemporaryLocalVariable currentModuleVariable;
+    private TemporaryLocalVariable currentScopeVariable;
 
-    // List of all scopes this scope contains lexically.  This is not used
-    // for execution, but is used during dry-runs for debugging.
-    List<IRScope> lexicalChildren;
+    Map<String, LocalVariable> localVars;
+    Map<String, LocalVariable> evalScopeVars;
 
-    protected static class LocalVariableAllocator {
-        public int nextSlot;
-        public Map<String, LocalVariable> varMap;
-
-        public LocalVariableAllocator() {
-            varMap = new HashMap<String, LocalVariable>();
-            nextSlot = 0;
-        }
-
-        public final LocalVariable getVariable(String name) {
-            return varMap.get(name);
-        }
-
-        public final void putVariable(String name, LocalVariable var) {
-            varMap.put(name, var);
-            nextSlot++;
-        }
-    }
-
-    LocalVariableAllocator localVars;
-    LocalVariableAllocator evalScopeVars;
+    EnumSet<IRFlags> flags = EnumSet.noneOf(IRFlags.class);
 
     /** Have scope flags been computed? */
     private boolean flagsComputed;
 
-    /* *****************************************************************************************************
-     * Does this execution scope (applicable only to methods) receive a block and use it in such a way that
-     * all of the caller's local variables need to be materialized into a heap binding?
-     * Ex:
-     *    def foo(&b)
-     *      eval 'puts a', b
-     *    end
-     *
-     *    def bar
-     *      a = 1
-     *      foo {} # prints out '1'
-     *    end
-     *
-     * Here, 'foo' can access all of bar's variables because it captures the caller's closure.
-     *
-     * There are 2 scenarios when this can happen (even this is conservative -- but, good enough for now)
-     * 1. This method receives an explicit block argument (in this case, the block can be stored, passed around,
-     *    eval'ed against, called, etc.).
-     *    CAVEAT: This is conservative ... it may not actually be stored & passed around, evaled, called, ...
-     * 2. This method has a 'super' call (ZSuper AST node -- ZSuperInstr IR instruction)
-     *    In this case, the parent (in the inheritance hierarchy) can access the block and store it, etc.  So, in reality,
-     *    rather than assume that the parent will always do this, we can query the parent, if we can precisely identify
-     *    the parent method (which in the face of Ruby's dynamic hierarchy, we cannot).  So, be pessimistic.
-     *
-     * This logic was extracted from an email thread on the JRuby mailing list -- Yehuda Katz & Charles Nutter
-     * contributed this analysis above.
-     * ********************************************************************************************************/
-    private boolean canCaptureCallersBinding;
-
-    /* ****************************************************************************
-     * Does this scope define code, i.e. does it (or anybody in the downward call chain)
-     * do class_eval, module_eval? In the absence of any other information, we default
-     * to yes -- which basically leads to pessimistic but safe optimizations.  But, for
-     * library and internal methods, this might be false.
-     * **************************************************************************** */
-    private boolean canModifyCode;
-
-    /* ****************************************************************************
-     * Does this scope require a binding to be materialized?
-     * Yes if any of the following holds true:
-     * - calls 'Proc.new'
-     * - calls 'eval'
-     * - calls 'call' (could be a call on a stored block which could be local!)
-     * - calls 'send' and we cannot resolve the message (method name) that is being sent!
-     * - calls methods that can access the caller's binding
-     * - calls a method which we cannot resolve now!
-     * - has a call whose closure requires a binding
-     * **************************************************************************** */
-    private boolean bindingHasEscaped;
-
-    /** Does this scope call any eval */
-    private boolean usesEval;
-
-    /** Does this scope receive keyword args? */
-    private boolean receivesKeywordArgs;
-
-    /** Does this scope have a break instr? */
-    protected boolean hasBreakInstrs;
-
-    /** Can this scope receive breaks */
-    protected boolean canReceiveBreaks;
-
-    /** Does this scope have a non-local return instr? */
-    protected boolean hasNonlocalReturns;
-
-    /** Can this scope receive a non-local return? */
-    public boolean canReceiveNonlocalReturns;
-
-    /** Since backref ($~) and lastline ($_) vars are allocated space on the dynamic scope,
-     * this is an useful flag to compute. */
-    private boolean usesBackrefOrLastline;
-
-    /** Does this scope call any zsuper */
-    private boolean usesZSuper;
-
-    /** Does this scope have loops? */
-    private boolean hasLoops;
-
     /** # of thread poll instrs added to this scope */
     private int threadPollInstrsCount;
-
-    /** Does this scope have explicit call protocol instructions?
-     *  If yes, there are IR instructions for managing bindings/frames, etc.
-     *  If not, this has to be managed implicitly as in the current runtime
-     *  For now, only dyn-scopes are managed explicitly.
-     *  Others will come in time */
-    private boolean hasExplicitCallProtocol;
 
     /** Should we re-run compiler passes -- yes after we've inlined, for example */
     private boolean relinearizeCFG;
@@ -270,9 +169,8 @@ public abstract class IRScope implements ParseResult {
         this.threadPollInstrsCount = s.threadPollInstrsCount;
         this.nextClosureIndex = s.nextClosureIndex;
         this.temporaryVariableIndex = s.temporaryVariableIndex;
-        this.hasLoops = s.hasLoops;
-        this.hasUnusedImplicitBlockArg = s.hasUnusedImplicitBlockArg;
-        this.instrList = null;
+        this.floatVariableIndex = s.floatVariableIndex;
+        this.instrList = new ArrayList<Instr>();
         this.nestedClosures = new ArrayList<IRClosure>();
         this.dfProbs = new HashMap<String, DataFlowProblem>();
         this.nextVarIndex = new HashMap<String, Integer>(); // SSS FIXME: clone!
@@ -281,21 +179,10 @@ public abstract class IRScope implements ParseResult {
         this.linearizedBBList = null;
 
         this.flagsComputed = s.flagsComputed;
-        this.canModifyCode = s.canModifyCode;
-        this.canCaptureCallersBinding = s.canCaptureCallersBinding;
-        this.receivesKeywordArgs = s.receivesKeywordArgs;
-        this.hasBreakInstrs = s.hasBreakInstrs;
-        this.hasNonlocalReturns = s.hasNonlocalReturns;
-        this.canReceiveBreaks = s.canReceiveBreaks;
-        this.canReceiveNonlocalReturns = s.canReceiveNonlocalReturns;
-        this.bindingHasEscaped = s.bindingHasEscaped;
-        this.usesEval = s.usesEval;
-        this.usesBackrefOrLastline = s.usesBackrefOrLastline;
-        this.usesZSuper = s.usesZSuper;
-        this.hasExplicitCallProtocol = s.hasExplicitCallProtocol;
+        this.flags = s.flags.clone();
 
-        this.localVars = new LocalVariableAllocator(); // SSS FIXME: clone!
-        this.localVars.nextSlot = s.localVars.nextSlot;
+        this.localVars = new HashMap<String, LocalVariable>(s.localVars);
+        synchronized(globalScopeCount) { this.scopeId = globalScopeCount++; }
         this.relinearizeCFG = false;
 
         setupLexicalContainment();
@@ -312,6 +199,7 @@ public abstract class IRScope implements ParseResult {
         this.threadPollInstrsCount = 0;
         this.nextClosureIndex = 0;
         this.temporaryVariableIndex = -1;
+        this.floatVariableIndex = -1;
         this.instrList = new ArrayList<Instr>();
         this.nestedClosures = new ArrayList<IRClosure>();
         this.dfProbs = new HashMap<String, DataFlowProblem>();
@@ -319,27 +207,25 @@ public abstract class IRScope implements ParseResult {
         this.cfg = null;
         this.linearizedInstrArray = null;
         this.linearizedBBList = null;
-        this.hasLoops = false;
-        this.hasUnusedImplicitBlockArg = false;
-
         this.flagsComputed = false;
-        this.receivesKeywordArgs = false;
-        this.hasBreakInstrs = false;
-        this.hasNonlocalReturns = false;
-        this.canReceiveBreaks = false;
-        this.canReceiveNonlocalReturns = false;
+        flags.remove(CAN_RECEIVE_BREAKS);
+        flags.remove(CAN_RECEIVE_NONLOCAL_RETURNS);
+        flags.remove(HAS_BREAK_INSTRS);
+        flags.remove(HAS_END_BLOCKS);
+        flags.remove(HAS_EXPLICIT_CALL_PROTOCOL);
+        flags.remove(HAS_LOOPS);
+        flags.remove(HAS_NONLOCAL_RETURNS);
+        flags.remove(HAS_UNUSED_IMPLICIT_BLOCK_ARG);
+        flags.remove(RECEIVES_KEYWORD_ARGS);
 
         // These flags are true by default!
-        this.canModifyCode = true;
-        this.canCaptureCallersBinding = true;
-        this.bindingHasEscaped = true;
-        this.usesEval = true;
-        this.usesBackrefOrLastline = true;
-        this.usesZSuper = true;
+        flags.add(CAN_CAPTURE_CALLERS_BINDING);
+        flags.add(BINDING_HAS_ESCAPED);
+        flags.add(USES_EVAL);
+        flags.add(USES_BACKREF_OR_LASTLINE);
+        flags.add(USES_ZSUPER);
 
-        this.hasExplicitCallProtocol = false;
-
-        this.localVars = new LocalVariableAllocator();
+        this.localVars = new HashMap<String, LocalVariable>();
         synchronized(globalScopeCount) { this.scopeId = globalScopeCount++; }
         this.relinearizeCFG = false;
 
@@ -347,7 +233,7 @@ public abstract class IRScope implements ParseResult {
     }
 
     private final void setupLexicalContainment() {
-        if (manager.isDryRun() || RubyInstanceConfig.IR_PERSISTENCE) {
+        if (manager.isDryRun() || RubyInstanceConfig.IR_WRITING) {
             lexicalChildren = new ArrayList<IRScope>();
             if (lexicalParent != null) lexicalParent.addChildScope(this);
         }
@@ -368,9 +254,7 @@ public abstract class IRScope implements ParseResult {
 
     @Override
     public boolean equals(Object other) {
-        if (other == null || getClass() != other.getClass()) return false;
-
-        return scopeId == ((IRScope) other).scopeId;
+        return (other != null) && (getClass() == other.getClass()) && (scopeId == ((IRScope) other).scopeId);
     }
 
     protected void addChildScope(IRScope scope) {
@@ -393,28 +277,22 @@ public abstract class IRScope implements ParseResult {
         return instrList.get(instrList.size() - 1);
     }
 
-    public void addInstrAtBeginning(Instr i) {
-        if (hasListener()) {
-            IRScopeListener listener = manager.getIRScopeListener();
-            listener.addedInstr(this, i, 0);
-        }
-        instrList.add(0, i);
+    public void addInstrAtBeginning(Instr instr) {
+        instr.computeScopeFlags(this);
+
+        if (hasListener()) manager.getIRScopeListener().addedInstr(this, instr, 0);
+
+        instrList.add(0, instr);
     }
 
-    public void addInstr(Instr i) {
-        // SSS FIXME: If more instructions set these flags, there may be
-        // a better way to do this by encoding flags in its own object
-        // and letting every instruction update it.
-        if (i instanceof ThreadPollInstr) threadPollInstrsCount++;
-        else if (i instanceof BreakInstr) this.hasBreakInstrs = true;
-        else if (i instanceof NonlocalReturnInstr) this.hasNonlocalReturns = true;
-        else if (i instanceof DefineMetaClassInstr) this.canReceiveNonlocalReturns = true;
-        else if (i instanceof ReceiveKeywordArgInstr || i instanceof ReceiveKeywordRestArgInstr) this.receivesKeywordArgs = true;
-        if (hasListener()) {
-            IRScopeListener listener = manager.getIRScopeListener();
-            listener.addedInstr(this, i, instrList.size());
-        }
-        instrList.add(i);
+    public void addInstr(Instr instr) {
+        if (instr instanceof ThreadPollInstr) threadPollInstrsCount++;
+
+        instr.computeScopeFlags(this);
+
+        if (hasListener()) manager.getIRScopeListener().addedInstr(this, instr, instrList.size());
+
+        instrList.add(instr);
     }
 
     public LocalVariable getNewFlipStateVariable() {
@@ -426,16 +304,8 @@ public abstract class IRScope implements ParseResult {
         instrList.add(0, new CopyInstr(v, initState));
     }
 
-    public boolean isForLoopBody() {
-        return false;
-    }
-
-    public boolean isBeginEndBlock() {
-        return false;
-    }
-
     public Label getNewLabel(String prefix) {
-        return new Label(prefix + "_" + allocateNextPrefixedName(prefix));
+        return new Label(prefix, allocateNextPrefixedName(prefix));
     }
 
     public Label getNewLabel() {
@@ -546,74 +416,56 @@ public abstract class IRScope implements ParseResult {
         return false;
     }
 
-    public void setHasLoopsFlag(boolean f) {
-        hasLoops = true;
+    public void setHasLoopsFlag() {
+        flags.add(HAS_LOOPS);
     }
 
     public boolean hasLoops() {
-        return hasLoops;
+        return flags.contains(HAS_LOOPS);
     }
 
     public boolean hasExplicitCallProtocol() {
-        return hasExplicitCallProtocol;
+        return flags.contains(HAS_EXPLICIT_CALL_PROTOCOL);
     }
 
-    public void setExplicitCallProtocolFlag(boolean flag) {
-        this.hasExplicitCallProtocol = flag;
-    }
-
-    public void setCodeModificationFlag(boolean f) {
-        canModifyCode = f;
+    public void setExplicitCallProtocolFlag() {
+        flags.add(HAS_EXPLICIT_CALL_PROTOCOL);
     }
 
     public boolean receivesKeywordArgs() {
-        return this.receivesKeywordArgs;
-    }
-
-    public boolean modifiesCode() {
-        return canModifyCode;
+        return flags.contains(RECEIVES_KEYWORD_ARGS);
     }
 
     public boolean bindingHasEscaped() {
-        return bindingHasEscaped;
+        return flags.contains(BINDING_HAS_ESCAPED);
     }
 
     public boolean usesBackrefOrLastline() {
-        return usesBackrefOrLastline;
+        return flags.contains(USES_BACKREF_OR_LASTLINE);
     }
 
     public boolean usesEval() {
-        return usesEval;
+        return flags.contains(USES_EVAL);
     }
 
     public boolean usesZSuper() {
-        return usesZSuper;
-    }
-
-    public boolean canCaptureCallersBinding() {
-        return canCaptureCallersBinding;
+        return flags.contains(USES_ZSUPER);
     }
 
     public boolean canReceiveNonlocalReturns() {
-        if (this.canReceiveNonlocalReturns) {
-            return true;
-        }
-
-        boolean canReceiveNonlocalReturns = false;
-        for (IRClosure cl : getClosures()) {
-            if (cl.hasNonlocalReturns || cl.canReceiveNonlocalReturns()) {
-                canReceiveNonlocalReturns = true;
-            }
-        }
-        return canReceiveNonlocalReturns;
+        computeScopeFlags();
+        return flags.contains(CAN_RECEIVE_NONLOCAL_RETURNS);
     }
 
     public CFG buildCFG() {
-        cfg = new CFG(this);
-        cfg.build(instrList);
+        CFG newCFG = new CFG(this);
+        newCFG.build(getInstrs());
         // Clear out instruction list after CFG has been built.
         this.instrList = null;
-        return cfg;
+
+        setCFG(newCFG);
+
+        return newCFG;
     }
 
     protected void setCFG(CFG cfg) {
@@ -629,24 +481,17 @@ public abstract class IRScope implements ParseResult {
 
         if (linearizedInstrArray != null) return linearizedInstrArray; // Already prepared
 
-        try {
-            buildLinearization(); // FIXME: compiler passes should have done this
-            depends(linearization());
-        } catch (RuntimeException e) {
-            LOG.error("Error linearizing cfg: ", e);
-            CFG c = cfg();
-            LOG.error("\nGraph:\n" + c.toStringGraph());
-            LOG.error("\nInstructions:\n" + c.toStringInstrs());
-            throw e;
-        }
+        setupLinearization();
 
         // Set up IPCs
-        HashMap<Label, Integer> labelIPCMap = new HashMap<Label, Integer>();
         List<Instr> newInstrs = new ArrayList<Instr>();
+        HashMap<Label, Integer> labelIPCMap = new HashMap<Label, Integer>();
         int ipc = 0;
         for (BasicBlock b: linearizedBBList) {
             Label l = b.getLabel();
             labelIPCMap.put(l, ipc);
+            // This assumes if multiple equal/same labels exist which are scattered around the scope
+            // must be the same Java instance or only this one will get a targetPC set.
             l.setTargetPC(ipc);
             List<Instr> bbInstrs = b.getInstrs();
             int bbInstrsLength = bbInstrs.size();
@@ -673,6 +518,13 @@ public abstract class IRScope implements ParseResult {
         cfg().getExitBB().getLabel().setTargetPC(ipc + 1);
 
         // Set up rescue map
+        setupRescueMap();
+
+        linearizedInstrArray = newInstrs.toArray(new Instr[newInstrs.size()]);
+        return linearizedInstrArray;
+    }
+
+    public void setupRescueMap() {
         this.rescueMap = new HashMap<Integer, Integer>();
         for (BasicBlock b : linearizedBBList) {
             BasicBlock rescuerBB = cfg().getRescuerBBFor(b);
@@ -681,31 +533,64 @@ public abstract class IRScope implements ParseResult {
                 rescueMap.put(i.getIPC(), rescuerPC);
             }
         }
-
-        linearizedInstrArray = newInstrs.toArray(new Instr[newInstrs.size()]);
-        return linearizedInstrArray;
     }
 
-    private void runCompilerPasses() {
+    private void runCompilerPasses(List<CompilerPass> passes) {
         // SSS FIXME: Why is this again?  Document this weirdness!
         // Forcibly clear out the shared eval-scope variable allocator each time this method executes
         initEvalScopeVariableAllocator(true);
+
         // SSS FIXME: We should configure different optimization levels
-        // and run different kinds of analysis depending on time budget.  Accordingly, we need to set
-        // IR levels/states (basic, optimized, etc.) and the
+        // and run different kinds of analysis depending on time budget.
+        // Accordingly, we need to set IR levels/states (basic, optimized, etc.)
         // ENEBO: If we use a MT optimization mechanism we cannot mutate CFG
         // while another thread is using it.  This may need to happen on a clone()
         // and we may need to update the method to return the new method.  Also,
         // if this scope is held in multiple locations how do we update all references?
-        CompilerPassScheduler scheduler = getManager().schedulePasses();
+
+        boolean unsafeScope = false;
+        if (flags.contains(HAS_END_BLOCKS) || this.isBeginEndBlock()) {
+            unsafeScope = true;
+        } else {
+            List beginBlocks = this.getBeginBlocks();
+            // Ex: BEGIN {a = 1}; p a
+            if (beginBlocks == null || beginBlocks.isEmpty()) {
+                // Ex: eval("BEGIN {a = 1}; p a")
+                // Here, the BEGIN is added to the outer script scope.
+                beginBlocks = this.getNearestTopLocalVariableScope().getBeginBlocks();
+                unsafeScope = beginBlocks != null && !beginBlocks.isEmpty();
+            } else {
+                unsafeScope = true;
+            }
+        }
+
+        // All passes are disabled in scopes where BEGIN and END scopes might
+        // screw around with escaped variables. Optimizing for them is not
+        // worth the effort. It is simpler to just go fully safe in scopes influenced
+        // by their presence.
+        if (unsafeScope) {
+            passes = getManager().getSafePasses(this);
+        }
+
+        CompilerPassScheduler scheduler = getManager().schedulePasses(passes);
         for (CompilerPass pass: scheduler) {
             pass.run(this);
         }
 
+        CompilerPass pass;
+
+        if (RubyInstanceConfig.IR_UNBOXING) {
+            pass = new UnboxingPass();
+            pass.run(this);
+        }
+    }
+
+    private void runDeadCodeAndVarLoadStorePasses() {
         // For methods with unescaped bindings, inline the binding
         // by converting local var loads/store to tmp var loads/stores
-        if (this instanceof IRMethod && !this.bindingHasEscaped()) {
-            CompilerPass pass = new DeadCodeElimination();
+        if (this instanceof IRMethod && !this.bindingHasEscaped() && !flags.contains(HAS_END_BLOCKS)) {
+            CompilerPass pass;
+            pass = new DeadCodeElimination();
             if (pass.previouslyRun(this) == null) {
                 pass.run(this);
             }
@@ -731,7 +616,12 @@ public abstract class IRScope implements ParseResult {
         if (linearizedInstrArray != null) return linearizedInstrArray;
 
         // Build CFG and run compiler passes, if necessary
-        if (getCFG() == null) runCompilerPasses();
+        if (getCFG() == null) {
+            runCompilerPasses(getManager().getCompilerPasses(this));
+
+            // run DCE and var load/store
+            runDeadCodeAndVarLoadStorePasses();
+        }
 
         // Linearize CFG, etc.
         return prepareInstructionsForInterpretation();
@@ -741,7 +631,12 @@ public abstract class IRScope implements ParseResult {
     /** Run any necessary passes to get the IR ready for compilation */
     public Tuple<Instr[], Map<Integer,Label[]>> prepareForCompilation() {
         // Build CFG and run compiler passes, if necessary
-        if (getCFG() == null) runCompilerPasses();
+        if (getCFG() == null) {
+            runCompilerPasses(getManager().getJITPasses(this));
+
+            // no DCE for now to stress-test JIT
+            //runDeadCodeAndVarLoadStorePasses();
+        }
 
         // Add this always since we dont re-JIT a previously
         // JIT-ted closure.  But, check if there are other
@@ -754,16 +649,9 @@ public abstract class IRScope implements ParseResult {
             this.relinearizeCFG = true;
         }
 
-        try {
-            buildLinearization(); // FIXME: compiler passes should have done this
-            depends(linearization());
-        } catch (RuntimeException e) {
-            LOG.error("Error linearizing cfg: ", e);
-            CFG c = cfg();
-            LOG.error("\nGraph:\n" + c.toStringGraph());
-            LOG.error("\nInstructions:\n" + c.toStringInstrs());
-            throw e;
-        }
+        checkRelinearization();
+
+        prepareInstructionsForInterpretation();
 
         // Set up IPCs
         // FIXME: Would be nice to collapse duplicate labels; for now, using Label[]
@@ -783,6 +671,19 @@ public abstract class IRScope implements ParseResult {
         }
 
         return new Tuple<Instr[], Map<Integer,Label[]>>(newInstrs.toArray(new Instr[newInstrs.size()]), ipcLabelMap);
+    }
+
+    private void setupLinearization() {
+        try {
+            buildLinearization(); // FIXME: compiler passes should have done this
+            depends(linearization());
+        } catch (RuntimeException e) {
+            LOG.error("Error linearizing cfg: ", e);
+            CFG c = cfg();
+            LOG.error("\nGraph:\n" + c.toStringGraph());
+            LOG.error("\nInstructions:\n" + c.toStringInstrs());
+            throw e;
+        }
     }
 
     private List<Object[]> buildJVMExceptionTable() {
@@ -808,114 +709,65 @@ public abstract class IRScope implements ParseResult {
         return newLabels;
     }
 
-    private boolean computeScopeFlags(boolean receivesClosureArg, List<Instr> instrs) {
-        for (Instr i: instrs) {
-            Operation op = i.getOperation();
-            if (op == Operation.RECV_CLOSURE) {
-                receivesClosureArg = true;
-            } else if (op == Operation.ZSUPER) {
-                this.canCaptureCallersBinding = true;
-                this.usesZSuper = true;
-            } else if (i instanceof CallBase) {
-                CallBase call = (CallBase) i;
-
-                if (call.targetRequiresCallersBinding()) this.bindingHasEscaped = true;
-
-                if (call.canBeEval()) {
-                    this.usesEval = true;
-
-                    // If this method receives a closure arg, and this call is an eval that has more than 1 argument,
-                    // it could be using the closure as a binding -- which means it could be using pretty much any
-                    // variable from the caller's binding!
-                    if (receivesClosureArg && (call.getCallArgs().length > 1)) {
-                        this.canCaptureCallersBinding = true;
-                    }
-                }
-            } else if (op == Operation.GET_GLOBAL_VAR) {
-                GlobalVariable gv = (GlobalVariable)((GetGlobalVariableInstr)i).getSource();
-                String gvName = gv.getName();
-                if (gvName.equals("$_") ||
-                    gvName.equals("$~") ||
-                    gvName.equals("$`") ||
-                    gvName.equals("$'") ||
-                    gvName.equals("$+") ||
-                    gvName.equals("$LAST_READ_LINE") ||
-                    gvName.equals("$LAST_MATCH_INFO") ||
-                    gvName.equals("$PREMATCH") ||
-                    gvName.equals("$POSTMATCH") ||
-                    gvName.equals("$LAST_PAREN_MATCH"))
-                {
-                    this.usesBackrefOrLastline = true;
-                }
-            } else if (op == Operation.PUT_GLOBAL_VAR) {
-                GlobalVariable gv = (GlobalVariable)((PutGlobalVarInstr)i).getTarget();
-                String gvName = gv.getName();
-                if (gvName.equals("$_") || gvName.equals("$~")) usesBackrefOrLastline = true;
-            } else if (op == Operation.MATCH || op == Operation.MATCH2 || op == Operation.MATCH3) {
-                this.usesBackrefOrLastline = true;
-            } else if (op == Operation.BREAK) {
-                this.hasBreakInstrs = true;
-            } else if (i instanceof NonlocalReturnInstr) {
-                this.hasNonlocalReturns = true;
-            } else if (i instanceof DefineMetaClassInstr) {
-                // SSS: Inner-classes are defined with closures and
-                // a return in the closure can force a return from this method
-                // For now conservatively assume that a scope with inner-classes
-                // can receive non-local returns. (Alternatively, have to inspect
-                // all lexically nested scopes, not just closures in computeScopeFlags())
-                this.canReceiveNonlocalReturns = true;
-            }
-        }
-
-        return receivesClosureArg;
+    public EnumSet<IRFlags> getFlags() {
+        return flags;
     }
 
-    //
     // This can help use eliminate writes to %block that are not used since this is
     // a special local-variable, not programmer-defined local-variable
     public void computeScopeFlags() {
-        if (flagsComputed) {
-            return;
-        }
+        if (flagsComputed) return;
 
         // init
-        canModifyCode = true;
-        canCaptureCallersBinding = false;
-        usesZSuper = false;
-        usesEval = false;
-        usesBackrefOrLastline = false;
+        flags.remove(CAN_CAPTURE_CALLERS_BINDING);
+        flags.remove(CAN_RECEIVE_BREAKS);
+        flags.remove(CAN_RECEIVE_NONLOCAL_RETURNS);
+        flags.remove(HAS_BREAK_INSTRS);
+        flags.remove(HAS_NONLOCAL_RETURNS);
+        flags.remove(USES_ZSUPER);
+        flags.remove(USES_EVAL);
+        flags.remove(USES_BACKREF_OR_LASTLINE);
         // NOTE: bindingHasEscaped is the crucial flag and it effectively is
         // unconditionally true whenever it has a call that receives a closure.
-        // See CallInstr.computeRequiresCallersBindingFlag
-        bindingHasEscaped = (this instanceof IREvalScript); // for eval scopes, bindings are considered escaped ...
-        hasBreakInstrs = false;
-        hasNonlocalReturns = false;
-        canReceiveBreaks = false;
-        canReceiveNonlocalReturns = false;
-
-        // recompute flags -- we could be calling this method different times
-        // definitely once after ir generation and local optimizations propagates constants locally
-        // but potentially at a later time after doing ssa generation and constant propagation
-        if (cfg == null) {
-            computeScopeFlags(false, getInstrs());
+        // See CallBase.computeRequiresCallersBindingFlag
+        if (this instanceof IREvalScript) { // for eval scopes, bindings are considered escaped ...
+            flags.add(BINDING_HAS_ESCAPED);
         } else {
-            boolean receivesClosureArg = false;
+            flags.remove(BINDING_HAS_ESCAPED);
+        }
+
+        // Recompute flags -- we could be calling this method different times.
+        // * once after IR generation and local optimizations propagates constants locally
+        // * also potentially at later times after other opt passes
+        if (cfg == null) {
+            for (Instr i: getInstrs()) {
+                i.computeScopeFlags(this);
+            }
+        } else {
             for (BasicBlock b: cfg.getBasicBlocks()) {
-                receivesClosureArg = computeScopeFlags(receivesClosureArg, b.getInstrs());
+                for (Instr i: b.getInstrs()) {
+                    i.computeScopeFlags(this);
+                }
             }
         }
 
         // Compute flags for nested closures (recursively) and set derived flags.
         for (IRClosure cl : getClosures()) {
             cl.computeScopeFlags();
-            if (cl.hasBreakInstrs || cl.canReceiveBreaks) {
-                canReceiveBreaks = true;
-            }
-            if (cl.hasNonlocalReturns || cl.canReceiveNonlocalReturns) {
-                canReceiveNonlocalReturns = true;
-            }
-            if (cl.usesZSuper()) {
-                usesZSuper = true;
+            if (cl.usesEval()) {
+                flags.add(CAN_RECEIVE_BREAKS);
+                flags.add(CAN_RECEIVE_NONLOCAL_RETURNS);
+                flags.add(USES_ZSUPER);
+            } else {
+                if (cl.flags.contains(HAS_BREAK_INSTRS) || cl.flags.contains(CAN_RECEIVE_BREAKS)) {
+                    flags.add(CAN_RECEIVE_BREAKS);
+                }
+                if (cl.flags.contains(HAS_NONLOCAL_RETURNS) || cl.flags.contains(CAN_RECEIVE_NONLOCAL_RETURNS)) {
+                    flags.add(CAN_RECEIVE_NONLOCAL_RETURNS);
+                }
+                if (cl.usesZSuper()) {
+                    flags.add(USES_ZSUPER);
+                }
             }
         }
 
@@ -951,52 +803,6 @@ public abstract class IRScope implements ParseResult {
         return b.toString();
     }
 
-    public String toStringVariables() {
-        Map<Variable, Integer> ends = new HashMap<Variable, Integer>();
-        Map<Variable, Integer> starts = new HashMap<Variable, Integer>();
-        SortedSet<Variable> variables = new TreeSet<Variable>();
-
-        for (int i = instrList.size() - 1; i >= 0; i--) {
-            Instr instr = instrList.get(i);
-
-            if (instr instanceof ResultInstr) {
-                Variable var = ((ResultInstr) instr).getResult();
-                variables.add(var);
-                starts.put(var, i);
-            }
-
-            for (Operand operand : instr.getOperands()) {
-                if (operand != null && operand instanceof Variable && ends.get((Variable)operand) == null) {
-                    ends.put((Variable)operand, i);
-                    variables.add((Variable)operand);
-                }
-            }
-        }
-
-        StringBuilder sb = new StringBuilder();
-        int i = 0;
-        for (Variable var : variables) {
-            Integer end = ends.get(var);
-            if (end != null) { // Variable is actually used somewhere and not dead
-                if (i > 0) sb.append("\n");
-                i++;
-                sb.append("    ").append(var).append(": ").append(starts.get(var)).append("-").append(end);
-            }
-        }
-
-        return sb.toString();
-    }
-
-    /** ---------------------------------------
-     * SSS FIXME: What is this method for?
-    @Interp
-    public void calculateParameterCounts() {
-        for (int i = instrList.size() - 1; i >= 0; i--) {
-            Instr instr = instrList.get(i);
-        }
-    }
-     ------------------------------------------ **/
-
     public LocalVariable getSelf() {
         return Self.SELF;
     }
@@ -1006,29 +812,52 @@ public abstract class IRScope implements ParseResult {
         // -> searching a constant in the inheritance hierarchy
         // -> searching a super-method in the inheritance hierarchy
         // -> looking up 'StandardError' (which can be eliminated by creating a special operand type for this)
-        if (currentModuleVar == null) currentModuleVar = getNewTemporaryVariable(Variable.CURRENT_MODULE);
-        return currentModuleVar;
+        if (currentModuleVariable == null) {
+            temporaryVariableIndex++;
+            currentModuleVariable = new TemporaryCurrentModuleVariable(temporaryVariableIndex);
+        }
+        return currentModuleVariable;
     }
 
     public Variable getCurrentScopeVariable() {
         // SSS: Used in only 1 case in generated IR:
         // -> searching a constant in the lexical scope hierarchy
-        if (currentScopeVar == null) currentScopeVar = getNewTemporaryVariable(Variable.CURRENT_SCOPE);
-        return currentScopeVar;
+        if (currentScopeVariable == null) {
+            temporaryVariableIndex++;
+            currentScopeVariable = new TemporaryCurrentScopeVariable(temporaryVariableIndex);
+        }
+        return currentScopeVariable;
     }
 
     public abstract LocalVariable getImplicitBlockArg();
 
-    public void markUnusedImplicitBlockArg() {
-        hasUnusedImplicitBlockArg = true;
+    /**
+     * Get the local variables for this scope.
+     * This should only be used by persistence layer.
+     */
+    public Map<String, LocalVariable> getLocalVariables() {
+        return localVars;
+    }
+
+    /**
+     * Set the local variables for this scope. This should only be used by persistence
+     * layer.
+     */
+    // FIXME: Consider making constructor for persistence to pass in all of this stuff
+    public void setLocalVariables(Map<String, LocalVariable> variables) {
+        this.localVars = variables;
+    }
+
+    public void setLabelIndices(Map<String, Integer> indices) {
+        nextVarIndex = indices;
     }
 
     public LocalVariable lookupExistingLVar(String name) {
-        return localVars.getVariable(name);
+        return localVars.get(name);
     }
 
     public LocalVariable findExistingLocalVariable(String name, int depth) {
-        return localVars.getVariable(name);
+        return localVars.get(name);
     }
 
     /**
@@ -1039,37 +868,97 @@ public abstract class IRScope implements ParseResult {
     public LocalVariable getLocalVariable(String name, int scopeDepth) {
         LocalVariable lvar = findExistingLocalVariable(name, scopeDepth);
         if (lvar == null) {
-            lvar = new LocalVariable(name, scopeDepth, localVars.nextSlot);
-            localVars.putVariable(name, lvar);
+            lvar = getNewLocalVariable(name, scopeDepth);
+        } else if (lvar.getScopeDepth() != scopeDepth) {
+            lvar = lvar.cloneForDepth(scopeDepth);
         }
 
         return lvar;
     }
 
-    public LocalVariable getNewLocalVariable(String name, int depth) {
-        throw new RuntimeException("getNewLocalVariable should be called for: " + this.getClass().getName());
+    public LocalVariable getNewLocalVariable(String name, int scopeDepth) {
+        assert scopeDepth == 0: "Scope depth is non-zero for new-var request " + name + " in " + this;
+        LocalVariable lvar = new LocalVariable(name, scopeDepth, getStaticScope().addVariable(name));
+        localVars.put(name, lvar);
+        return lvar;
     }
 
     protected void initEvalScopeVariableAllocator(boolean reset) {
-        if (reset || evalScopeVars == null) evalScopeVars = new LocalVariableAllocator();
+        if (reset || evalScopeVars == null) evalScopeVars = new HashMap<String, LocalVariable>();
     }
 
-    public TemporaryVariable getNewTemporaryVariable() {
-        temporaryVariableIndex++;
-        return new TemporaryVariable(temporaryVariableIndex);
+    public TemporaryLocalVariable getNewTemporaryVariable() {
+        return getNewTemporaryVariable(TemporaryVariableType.LOCAL);
     }
 
-    public TemporaryVariable getNewTemporaryVariable(String name) {
+    public TemporaryLocalVariable getNewTemporaryVariableFor(LocalVariable var) {
         temporaryVariableIndex++;
-        return new TemporaryVariable(name, temporaryVariableIndex);
+        return new TemporaryLocalReplacementVariable(var.getName(), temporaryVariableIndex);
+    }
+
+    public TemporaryLocalVariable getNewTemporaryVariable(TemporaryVariableType type) {
+        switch (type) {
+            case FLOAT: {
+                floatVariableIndex++;
+                return new TemporaryFloatVariable(floatVariableIndex);
+            }
+            case FIXNUM: {
+                fixnumVariableIndex++;
+                return new TemporaryFixnumVariable(fixnumVariableIndex);
+            }
+            case BOOLEAN: {
+                // Shares var index with locals
+                temporaryVariableIndex++;
+                return new TemporaryBooleanVariable(temporaryVariableIndex);
+            }
+            case LOCAL: {
+                temporaryVariableIndex++;
+                return new TemporaryLocalVariable(temporaryVariableIndex);
+            }
+        }
+
+        throw new RuntimeException("Invalid temporary variable being alloced in this scope: " + type);
+    }
+
+    public void setTemporaryVariableCount(int count) {
+        temporaryVariableIndex = count + 1;
+    }
+
+    public TemporaryLocalVariable getNewUnboxedVariable(Class type) {
+        TemporaryVariableType varType;
+        if (type == Float.class) {
+            varType = TemporaryVariableType.FLOAT;
+        } else if (type == Fixnum.class) {
+            varType = TemporaryVariableType.FIXNUM;
+        } else if (type == UnboxedBoolean.class) {
+            varType = TemporaryVariableType.BOOLEAN;
+        } else {
+            varType = TemporaryVariableType.LOCAL;
+        }
+        return getNewTemporaryVariable(varType);
     }
 
     public void resetTemporaryVariables() {
         temporaryVariableIndex = -1;
+        floatVariableIndex = -1;
+        fixnumVariableIndex = -1;
+        booleanVariableIndex = -1;
     }
 
-    public int getTemporaryVariableSize() {
+    public int getTemporaryVariablesCount() {
         return temporaryVariableIndex + 1;
+    }
+
+    public int getFloatVariablesCount() {
+        return floatVariableIndex + 1;
+    }
+
+    public int getFixnumVariablesCount() {
+        return fixnumVariableIndex + 1;
+    }
+
+    public int getBooleanVariablesCount() {
+        return booleanVariableIndex + 1;
     }
 
     // Generate a new variable for inlined code
@@ -1087,7 +976,7 @@ public abstract class IRScope implements ParseResult {
     }
 
     public int getLocalVariablesCount() {
-        return localVars.nextSlot;
+        return localVars.size();
     }
 
     public int getUsedVariablesCount() {
@@ -1154,11 +1043,21 @@ public abstract class IRScope implements ParseResult {
     // This should only be used to do pre-cfg opts and to build the CFG.
     // Everyone else should use the CFG.
     public List<Instr> getInstrs() {
+        if (persistenceStore != null) {
+            instrList = persistenceStore.decodeInstructionsAt(this, instructionsOffsetInfoPersistenceBuffer);
+        }
         if (cfg != null) throw new RuntimeException("Please use the CFG to access this scope's instructions.");
         return instrList;
     }
 
     public Instr[] getInstrsForInterpretation() {
+        return linearizedInstrArray;
+    }
+
+    public Instr[] getInstrsForInterpretation(boolean isLambda) {
+        if (linearizedInstrArray == null) {
+            prepareForInterpretation(isLambda);
+        }
         return linearizedInstrArray;
     }
 
@@ -1203,38 +1102,6 @@ public abstract class IRScope implements ParseResult {
         return cfg;
     }
 
-    public void splitCalls() {
-        // FIXME: (Enebo) We are going to make a SplitCallInstr so this logic can be separate
-        // from unsplit calls.  Comment out until new SplitCall is created.
-//        for (BasicBlock b: getNodes()) {
-//            List<Instr> bInstrs = b.getInstrs();
-//            for (ListIterator<Instr> it = ((ArrayList<Instr>)b.getInstrs()).listIterator(); it.hasNext(); ) {
-//                Instr i = it.next();
-//                // Only user calls, not Ruby & JRuby internal calls
-//                if (i.operation == Operation.CALL) {
-//                    CallInstr call = (CallInstr)i;
-//                    Operand   r    = call.getReceiver();
-//                    Operand   m    = call.getMethodAddr();
-//                    Variable  mh   = _scope.getNewTemporaryVariable();
-//                    MethodLookupInstr mli = new MethodLookupInstr(mh, m, r);
-//                    // insert method lookup at the right place
-//                    it.previous();
-//                    it.add(mli);
-//                    it.next();
-//                    // update call address
-//                    call.setMethodAddr(mh);
-//                }
-//            }
-//        }
-//
-//        List<IRClosure> nestedClosures = _scope.getClosures();
-//        if (!nestedClosures.isEmpty()) {
-//            for (IRClosure c : nestedClosures) {
-//                c.getCFG().splitCalls();
-//            }
-//        }
-    }
-
     public void resetDFProblemsState() {
         dfProbs = new HashMap<String, DataFlowProblem>();
         for (IRClosure c: nestedClosures) c.resetDFProblemsState();
@@ -1247,15 +1114,15 @@ public abstract class IRScope implements ParseResult {
 
         // reset flags
         flagsComputed = false;
-        canModifyCode = true;
-        canCaptureCallersBinding = true;
-        bindingHasEscaped = true;
-        usesEval = true;
-        usesZSuper = true;
-        hasBreakInstrs = false;
-        hasNonlocalReturns = false;
-        canReceiveBreaks = false;
-        canReceiveNonlocalReturns = false;
+        flags.add(CAN_CAPTURE_CALLERS_BINDING);
+        flags.add(BINDING_HAS_ESCAPED);
+        flags.add(USES_EVAL);
+        flags.add(USES_ZSUPER);
+
+        flags.remove(HAS_BREAK_INSTRS);
+        flags.remove(HAS_NONLOCAL_RETURNS);
+        flags.remove(CAN_RECEIVE_BREAKS);
+        flags.remove(CAN_RECEIVE_NONLOCAL_RETURNS);
         rescueMap = null;
 
         // Reset dataflow problems state
@@ -1276,12 +1143,6 @@ public abstract class IRScope implements ParseResult {
         }
     }
 
-    public void buildCFG(List<Instr> instrList) {
-        CFG newBuild = new CFG(this);
-        newBuild.build(instrList);
-        cfg = newBuild;
-    }
-
     public void resetCFG() {
         cfg = null;
     }
@@ -1296,6 +1157,14 @@ public abstract class IRScope implements ParseResult {
         throw new RuntimeException("END blocks cannot be added to: " + this.getClass().getName());
     }
 
+    public List<IRClosure> getBeginBlocks() {
+        return null;
+    }
+
+    public List<IRClosure> getEndBlocks() {
+        return null;
+    }
+
     // Enebo: We should just make n primitive int and not take the hash hit
     protected int allocateNextPrefixedName(String prefix) {
         int index = getPrefixCountSize(prefix);
@@ -1305,8 +1174,20 @@ public abstract class IRScope implements ParseResult {
         return index;
     }
 
+    // This is how IR Persistence can re-read existing saved labels and reset
+    // scope back to proper index.
+    public void setPrefixedNameIndexTo(String prefix, int newIndex) {
+        int index = getPrefixCountSize(prefix);
+
+        nextVarIndex.put(prefix, index);
+    }
+
     protected void resetVariableCounter(String prefix) {
         nextVarIndex.remove(prefix);
+    }
+
+    public Map<String, Integer> getVarIndices() {
+        return nextVarIndex;
     }
 
     protected int getPrefixCountSize(String prefix) {
@@ -1317,15 +1198,14 @@ public abstract class IRScope implements ParseResult {
         return index.intValue();
     }
 
-    public RubyModule getContainerModule() {
-//        System.out.println("GET: container module of " + getName() + " with hc " + hashCode() + " to " + containerModule.getName());
-        return containerModule;
-    }
-
     public int getNextClosureId() {
         nextClosureIndex++;
 
         return nextClosureIndex;
+    }
+
+    public boolean isBeginEndBlock() {
+        return false;
     }
 
     /**
@@ -1355,5 +1235,10 @@ public abstract class IRScope implements ParseResult {
      */
     public boolean isScriptScope() {
         return false;
+    }
+
+    public void savePersistenceInfo(int offset, IRReaderDecoder file) {
+        instructionsOffsetInfoPersistenceBuffer = offset;
+        persistenceStore = file;
     }
 }

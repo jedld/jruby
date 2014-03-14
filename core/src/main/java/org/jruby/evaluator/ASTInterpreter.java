@@ -171,7 +171,9 @@ public class ASTInterpreter {
             Node node = runtime.parseEval(source.getByteList(), binding.getFile(), evalScope, binding.getLine());
             Block block = binding.getFrame().getBlock();
 
-            if (runtime.getInstanceConfig().getCompileMode() == CompileMode.OFFIR) {
+            if (runtime.getInstanceConfig().getCompileMode() == CompileMode.TRUFFLE) {
+                throw new UnsupportedOperationException();
+            } else if (runtime.getInstanceConfig().getCompileMode() == CompileMode.OFFIR) {
                 // SSS FIXME: AST interpreter passed both a runtime (which comes from the source string)
                 // and the thread-context rather than fetch one from the other.  Why is that?
                 return Interpreter.interpretBindingEval(runtime, binding.getFile(), binding.getLine(), binding.getMethod(), node, self, block);
@@ -213,7 +215,9 @@ public class ASTInterpreter {
         try {
             Node node = runtime.parseEval(source.getByteList(), file, evalScope, lineNumber);
 
-            if (runtime.getInstanceConfig().getCompileMode() == CompileMode.OFFIR) {
+            if (runtime.getInstanceConfig().getCompileMode() == CompileMode.TRUFFLE) {
+                throw new UnsupportedOperationException();
+            } else if (runtime.getInstanceConfig().getCompileMode() == CompileMode.OFFIR) {
                 // SSS FIXME: AST interpreter passed both a runtime (which comes from the source string)
                 // and the thread-context rather than fetch one from the other.  Why is that?
                 return Interpreter.interpretSimpleEval(runtime, file, lineNumber, "(eval)", node, self);
@@ -348,9 +352,6 @@ public class ASTInterpreter {
     public static RubyModule getClassVariableBase(Ruby runtime, StaticScope scope) {
         RubyModule rubyClass = scope.getModule();
         while (rubyClass.isSingleton() || rubyClass == runtime.getDummy()) {
-            // We ran out of scopes to check
-            if (scope == null) return null;
-
             scope = scope.getPreviousCRefScope();
             rubyClass = scope.getModule();
             if (scope.getPreviousCRefScope() == null) {

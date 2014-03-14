@@ -2,7 +2,7 @@ package org.jruby.ir.instructions;
 
 import org.jruby.ir.IRVisitor;
 import org.jruby.ir.Operation;
-import org.jruby.ir.operands.BooleanLiteral;
+import org.jruby.ir.operands.UnboxedBoolean;
 import org.jruby.ir.operands.Operand;
 import org.jruby.ir.transformations.inlining.InlinerInfo;
 
@@ -20,12 +20,13 @@ public class ThreadPollInstr extends Instr implements FixedArityInstr {
 
     @Override
     public Operand[] getOperands() {
-        return new Operand[] { new BooleanLiteral(onBackEdge) };
+        return new Operand[] { new UnboxedBoolean(onBackEdge) };
     }
 
     @Override
     public Instr cloneForInlining(InlinerInfo ii) {
         switch (ii.getCloneMode()) {
+            case ENSURE_BLOCK_CLONE:
             case NORMAL_CLONE:
                 return this;
             default:

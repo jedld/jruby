@@ -60,6 +60,7 @@ import org.jruby.runtime.ClassIndex;
 import org.jruby.runtime.Helpers;
 import org.jruby.runtime.ObjectAllocator;
 import org.jruby.runtime.ThreadContext;
+import org.jruby.runtime.Visibility;
 import org.jruby.runtime.builtin.IRubyObject;
 import org.jruby.runtime.encoding.EncodingCapable;
 import org.jruby.runtime.encoding.MarshalEncoding;
@@ -218,11 +219,11 @@ public class RubyString extends RubyObject implements EncodingCapable, MarshalEn
     }
 
     public final boolean isCodeRangeValid() {
-        return (flags & CR_VALID) != 0;
+        return (flags & CR_MASK) == CR_VALID;
     }
 
     public final boolean isCodeRangeBroken() {
-        return (flags & CR_BROKEN) == CR_BROKEN;
+        return (flags & CR_MASK) == CR_BROKEN;
     }
 
     static int codeRangeAnd(int cr1, int cr2) {
@@ -271,6 +272,7 @@ public class RubyString extends RubyObject implements EncodingCapable, MarshalEn
         return getCodeRange() == CR_7BIT || enc.isSingleByte();
     }
 
+    // rb_enc_compatible
     private Encoding isCompatibleWith(RubyString other) { 
         Encoding enc1 = value.getEncoding();
         Encoding enc2 = other.value.getEncoding();
@@ -278,7 +280,9 @@ public class RubyString extends RubyObject implements EncodingCapable, MarshalEn
         if (enc1 == enc2) return enc1;
 
         if (other.value.getRealSize() == 0) return enc1;
-        if (value.getRealSize() == 0) return enc2;
+        if (value.getRealSize() == 0) {
+            return (enc1.isAsciiCompatible() && other.isAsciiOnly()) ? enc1 : enc2;
+        }
 
         if (!enc1.isAsciiCompatible() || !enc2.isAsciiCompatible()) return null;
 
@@ -298,6 +302,7 @@ public class RubyString extends RubyObject implements EncodingCapable, MarshalEn
         return null;
     }
 
+    // rb_enc_check
     public final Encoding checkEncoding(RubyString other) {
         Encoding enc = isCompatibleWith(other);
         if (enc == null) throw getRuntime().newEncodingCompatibilityError("incompatible character encodings: " + 
@@ -1364,7 +1369,13 @@ public class RubyString extends RubyObject implements EncodingCapable, MarshalEn
         return replace19(other);
     }
 
-    @JRubyMethod(name = {"replace", "initialize_copy"}, required = 1)
+    @JRubyMethod(name = "initialize_copy", required = 1, visibility = Visibility.PRIVATE)
+    @Override
+    public RubyString initialize_copy(IRubyObject other) {
+        return replace19(other);
+    }
+
+    @JRubyMethod(name = "replace", required = 1)
     public RubyString replace19(IRubyObject other) {
         modifyCheck();
         if (this == other) return this;
@@ -5768,7 +5779,7 @@ public class RubyString extends RubyObject implements EncodingCapable, MarshalEn
             int n = is7bit ? 1 : StringSupport.length(enc, bytes, p, end);
             RubyString str;
             if (n == 1 && isUSASCII) {
-                str = newStringShared(runtime, RubyFixnum.SINGLE_CHAR_BYTELISTS19[bytes[p]], StringSupport.CR_7BIT);
+                str = newStringShared(runtime, RubyFixnum.SINGLE_CHAR_BYTELISTS19[bytes[p] & 0xFF], StringSupport.CR_7BIT);
             } else {
                 str = makeShared19(runtime, val, p-value.getBegin(), n);
             }

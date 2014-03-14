@@ -54,6 +54,7 @@ import org.jruby.ast.ClassVarDeclNode;
 import org.jruby.ast.ClassVarNode;
 import org.jruby.ast.Colon2Node;
 import org.jruby.ast.Colon3Node;
+import org.jruby.ast.ComplexNode;
 import org.jruby.ast.ConstDeclNode;
 import org.jruby.ast.ConstNode;
 import org.jruby.ast.DAsgnNode;
@@ -98,7 +99,6 @@ import org.jruby.ast.MultipleAsgnNode;
 import org.jruby.ast.NewlineNode;
 import org.jruby.ast.NextNode;
 import org.jruby.ast.NilNode;
-import org.jruby.ast.NotNode;
 import org.jruby.ast.NthRefNode;
 import org.jruby.ast.OpAsgnAndNode;
 import org.jruby.ast.OpAsgnNode;
@@ -108,8 +108,10 @@ import org.jruby.ast.OptArgNode;
 import org.jruby.ast.OrNode;
 import org.jruby.ast.PostExeNode;
 import org.jruby.ast.PreExeNode;
+import org.jruby.ast.RationalNode;
 import org.jruby.ast.RedoNode;
 import org.jruby.ast.RegexpNode;
+import org.jruby.ast.RequiredKeywordArgumentValueNode;
 import org.jruby.ast.RescueBodyNode;
 import org.jruby.ast.RescueNode;
 import org.jruby.ast.RestArgNode;
@@ -140,8 +142,7 @@ import org.jruby.ast.ZSuperNode;
  * Visitor interface to be implemented by visitors of the jRuby AST.
  * each node will call the visit method appropriate to its type.
  * @see org.jruby.ast.Node
- * @see org.jruby.ast.visitor.AbstractVisitor
- * 
+  *
  * @author Benoit Cerrina
  **/
 public interface NodeVisitor {
@@ -169,6 +170,7 @@ public interface NodeVisitor {
     public Object visitClassNode(ClassNode iVisited);
     public Object visitColon2Node(Colon2Node iVisited);
     public Object visitColon3Node(Colon3Node iVisited);
+    public Object visitComplexNode(ComplexNode iVisited);
     public Object visitConstNode(ConstNode iVisited);
     public Object visitDAsgnNode(DAsgnNode iVisited);
     public Object visitDRegxNode(DRegexpNode iVisited);
@@ -212,7 +214,6 @@ public interface NodeVisitor {
     public Object visitNewlineNode(NewlineNode iVisited);
     public Object visitNextNode(NextNode iVisited);
     public Object visitNilNode(NilNode iVisited);
-    public Object visitNotNode(NotNode iVisited);
     public Object visitNthRefNode(NthRefNode iVisited);
     public Object visitOpElementAsgnNode(OpElementAsgnNode iVisited);
     public Object visitOpAsgnNode(OpAsgnNode iVisited);
@@ -222,8 +223,10 @@ public interface NodeVisitor {
     public Object visitOrNode(OrNode iVisited);
     public Object visitPreExeNode(PreExeNode iVisited);
     public Object visitPostExeNode(PostExeNode iVisited);
+    public Object visitRationalNode(RationalNode iVisited);
     public Object visitRedoNode(RedoNode iVisited);
     public Object visitRegexpNode(RegexpNode iVisited);
+    public Object visitRequiredKeywordArgumentValueNode(RequiredKeywordArgumentValueNode iVisited);
     public Object visitRescueBodyNode(RescueBodyNode iVisited);
     public Object visitRescueNode(RescueNode iVisited);
     public Object visitRestArgNode(RestArgNode iVisited);

@@ -9,10 +9,13 @@ import org.jruby.ir.operands.Operand;
 import org.jruby.ir.operands.Variable;
 import org.jruby.ir.runtime.IRRuntimeHelpers;
 import org.jruby.ir.transformations.inlining.InlinerInfo;
+import org.jruby.parser.IRStaticScope;
 import org.jruby.runtime.Block;
 import org.jruby.runtime.DynamicScope;
 import org.jruby.runtime.ThreadContext;
 import org.jruby.runtime.builtin.IRubyObject;
+
+import org.jruby.parser.IRStaticScope;
 
 import java.util.Map;
 import org.jruby.ir.operands.StringLiteral;
@@ -28,15 +31,15 @@ public class RuntimeHelperCall extends Instr implements ResultInstr {
         this.helperMethod = helperMethod;
         this.args = args;
     }
-    
+
     public Operand[] getArgs() {
         return args;
     }
-    
+
     public String getHelperMethod() {
         return helperMethod;
     }
-    
+
     @Override
     public Operand[] getOperands() {
         Operand[] operands = new Operand[args.length + 1];
@@ -78,19 +81,18 @@ public class RuntimeHelperCall extends Instr implements ResultInstr {
         return (getResult() == null ? "" : (getResult() + " = ")) + getOperation()  + "(" + helperMethod + ", " + Arrays.toString(args) + ")";
     }
 
-    public IRubyObject callHelper(ThreadContext context, DynamicScope currDynScope, IRubyObject self, Object[] temp, IRScope scope, Block.Type blockType) {
+    public IRubyObject callHelper(ThreadContext context, DynamicScope currDynScope, IRubyObject self, Object[] temp, Block.Type blockType) {
         Object exc = args[0].retrieve(context, self, currDynScope, temp);
+        IRStaticScope scope = (IRStaticScope)currDynScope.getStaticScope();
         if (helperMethod.equals("handlePropagatedBreak")) {
             return IRRuntimeHelpers.handlePropagatedBreak(context, scope, exc, blockType);
         } else if (helperMethod.equals("handleNonlocalReturn")) {
             return IRRuntimeHelpers.handleNonlocalReturn(scope, exc, blockType);
-        } else if (helperMethod.equals("catchUncaughtBreakInLambdas")) {
-            IRRuntimeHelpers.catchUncaughtBreakInLambdas(context, scope, exc, blockType);
-            // should not get here
-            return null;
+        } else if (helperMethod.equals("handleBreakAndReturnsInLambdas")) {
+            return IRRuntimeHelpers.handleBreakAndReturnsInLambdas(context, scope, exc, blockType);
         } else {
             // Unknown helper method!
-            return null;
+            throw new RuntimeException("Unknown IR runtime helper method: " + helperMethod + "; INSTR: " + this);
         }
     }
 

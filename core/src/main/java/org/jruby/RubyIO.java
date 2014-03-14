@@ -75,6 +75,7 @@ import org.jruby.runtime.Block;
 import org.jruby.runtime.ClassIndex;
 import org.jruby.runtime.ObjectAllocator;
 import org.jruby.runtime.ThreadContext;
+import org.jruby.runtime.Visibility;
 import static org.jruby.runtime.Visibility.*;
 import org.jruby.runtime.builtin.IRubyObject;
 import org.jruby.util.ByteList;
@@ -1395,7 +1396,7 @@ public class RubyIO extends RubyObject implements IOEncodable {
 
         // console() can detect underlying windows codepage so we will just write to it
         // and hope it is legible.
-        if (Platform.IS_WINDOWS && tty_p(getRuntime().getCurrentContext()).isTrue()) {
+        if (Platform.IS_WINDOWS && tty_p(getRuntime().getCurrentContext()).isTrue() && System.console() != null) {
             System.console().printf("%s", buffer.asJavaString());
             return len;
         }
@@ -1915,7 +1916,7 @@ public class RubyIO extends RubyObject implements IOEncodable {
         }
     }
     
-    @JRubyMethod(required = 1)
+    @JRubyMethod(required = 1, visibility = Visibility.PRIVATE)
     @Override
     public IRubyObject initialize_copy(IRubyObject original){
         Ruby runtime = getRuntime();

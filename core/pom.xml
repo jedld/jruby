@@ -74,13 +74,13 @@
     <dependency>
       <groupId>com.github.jnr</groupId>
       <artifactId>jnr-posix</artifactId>
-      <version>3.0.1</version>
+      <version>3.0.2-SNAPSHOT</version>
       <type>jar</type>
     </dependency>
     <dependency>
       <groupId>org.jruby.extras</groupId>
       <artifactId>bytelist</artifactId>
-      <version>1.0.10</version>
+      <version>1.0.11</version>
       <type>jar</type>
     </dependency>
     <dependency>
@@ -129,7 +129,7 @@
     <dependency>
       <groupId>com.headius</groupId>
       <artifactId>invokebinder</artifactId>
-      <version>1.2</version>
+      <version>1.3</version>
       <type>jar</type>
     </dependency>
     <dependency>
@@ -176,7 +176,7 @@
     <dependency>
       <groupId>com.headius</groupId>
       <artifactId>jsr292-mock</artifactId>
-      <version>1.0</version>
+      <version>1.1</version>
       <type>jar</type>
       <scope>provided</scope>
     </dependency>
@@ -201,6 +201,12 @@
       <version>${joda.time.version}</version>
       <type>jar</type>
     </dependency>
+    <dependency>
+      <groupId>com.oracle</groupId>
+      <artifactId>truffle</artifactId>
+      <version>0.1</version>
+      <type>jar</type>
+    </dependency>
   </dependencies>
   <properties>
     <anno.sources>${project.basedir}/target/generated-sources</anno.sources>
@@ -208,9 +214,9 @@
     <maven.build.timestamp.format>yyyy-MM-dd</maven.build.timestamp.format>
     <build.date>${maven.build.timestamp}</build.date>
     <Constants.java>org/jruby/runtime/Constants.java</Constants.java>
-    <jruby.compile.memory>512M</jruby.compile.memory>
-    <jruby.test.memory>1024M</jruby.test.memory>
-    <jruby.test.memory.permgen>512M</jruby.test.memory.permgen>
+    <jruby.compile.memory>2G</jruby.compile.memory>
+    <jruby.test.memory>3G</jruby.test.memory>
+    <jruby.test.memory.permgen>2G</jruby.test.memory.permgen>
     <maven.test.skip>true</maven.test.skip>
     <jruby.basedir>${basedir}/..</jruby.basedir>
     <!-- this one needs to match the version packed with joda-time -->
@@ -271,7 +277,6 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>build-helper-maven-plugin</artifactId>
-        <version>1.8</version>
         <executions>
           <execution>
             <id>add-populators</id>
@@ -290,7 +295,6 @@
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
-        <version>1.2.1</version>
         <executions>
           <execution>
             <id>invoker-generator</id>
@@ -320,11 +324,16 @@
           <debug>true</debug>
           <verbose>true</verbose>
           <fork>true</fork>
+          <compilerArgs>
+            <arg>-J-Xmx1G</arg>
+          </compilerArgs>
           <showWarnings>true</showWarnings>
           <showDeprecation>true</showDeprecation>
           <source>${base.java.version}</source>
           <target>${base.javac.version}</target>
           <useIncrementalCompilation>false</useIncrementalCompilation>
+          <source>1.7</source>
+          <target>1.7</target>
         </configuration>
         <executions>
           <execution>
@@ -355,7 +364,9 @@
             <configuration>
               <annotationProcessors>
                 <annotationProcessor>org.jruby.anno.AnnotationBinder</annotationProcessor>
+                <annotationProcessor>com.oracle.truffle.dsl.processor.TruffleProcessor</annotationProcessor>
               </annotationProcessors>
+              <generatedSourcesDirectory>target/generated-sources</generatedSourcesDirectory>
               <compilerArgs>
                 <compilerArg>-XDignore.symbol.file=true</compilerArg>
                 <compilerArg>-J-Duser.language=en</compilerArg>
@@ -468,22 +479,20 @@
       <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
-          <forkCount>1C</forkCount>
+          <forkCount>1</forkCount>
           <reuseForks>false</reuseForks>
           <systemProperties>
             <jruby.compat.version>1.9</jruby.compat.version>
             <jruby.home>${basedir}/..</jruby.home>
           </systemProperties>
-          <argLine>-Xmx${jruby.test.memory}</argLine>
-          <argLine>-XX:MaxPermSize=${jruby.test.memory.permgen}</argLine>
-          <argLine>-Dfile.encoding=UTF-8</argLine>
-          <argLine>-Djava.awt.headless=true</argLine>
+          <argLine>-Xmx${jruby.test.memory} -XX:MaxPermSize=${jruby.test.memory.permgen} -Dfile.encoding=UTF-8 -Djava.awt.headless=true</argLine>
           <includes>
             <include>org/jruby/test/MainTestSuite.java</include>
             <include>org/jruby/embed/**/*Test*.java</include>
+            <include>org/jruby/truffle/test/TruffleTestSuite.java</include>
           </includes>
           <additionalClasspathElements>
-              <additionalClasspathElement>${basedir}/src/test/ruby</additionalClasspathElement>
+            <additionalClasspathElement>${basedir}/src/test/ruby</additionalClasspathElement>
           </additionalClasspathElements>
         </configuration>
       </plugin>
@@ -614,7 +623,7 @@
 	  <executions>
 	    <execution>
 	      <id>pack jruby-noasm.jar</id>
-	      <phase>package</phase>
+	      <phase>verify</phase>
 	      <goals>
 		<goal>shade</goal>
 	      </goals>
@@ -641,26 +650,6 @@
     </pluginManagement>
   </build>
   <profiles>
-    <profile>
-      <id>main</id>
-      <build>
-	<plugins>
-	  <plugin>
-	    <artifactId>maven-shade-plugin</artifactId>
-	  </plugin>
-	</plugins>
-      </build>
-    </profile>
-    <profile>
-      <id>all</id>
-      <build>
-	<plugins>
-	  <plugin>
-	    <artifactId>maven-shade-plugin</artifactId>
-	  </plugin>
-	</plugins>
-      </build>
-    </profile>
     <profile>
       <id>jruby.bash</id>
       <activation>

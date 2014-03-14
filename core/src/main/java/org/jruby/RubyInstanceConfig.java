@@ -1485,7 +1485,7 @@ public class RubyInstanceConfig {
 	}
 
     public enum CompileMode {
-        JIT, FORCE, FORCEIR, OFF, OFFIR;
+        JIT, FORCE, FORCEIR, OFF, OFFIR, TRUFFLE;
 
         public boolean shouldPrecompileCLI() {
             switch (this) {
@@ -1607,13 +1607,12 @@ public class RubyInstanceConfig {
      * Set with the <tt>jruby.thread.pool.max</tt> system property.
      */
     public static final int POOL_TTL = Options.THREADPOOL_TTL.load();
-
     /**
-     * Maximum timeout thread pool size (integer, default # of cores).
+     * Fiber thread pool time-to-live in seconds.
      *
-     * Set with the <tt>jruby.timeout.thread.pool.max</tt> system property.
+     * Set with the <tt>jruby.fiber.thread.pool.max</tt> system property.
      */
-    public static final int TIMEOUT_POOL_MAX = Options.TIMEOUT_THREADPOOL_MAX.load();
+    public static final int FIBER_POOL_TTL = Options.FIBER_THREADPOOL_TTL.load();
 
     /**
      * Enable use of the native Java version of the 'net/protocol' library.
@@ -1772,10 +1771,14 @@ public class RubyInstanceConfig {
     public static boolean IR_DEBUG = Options.IR_DEBUG.load();
     public static boolean IR_PROFILE = Options.IR_PROFILE.load();
     public static boolean IR_COMPILER_DEBUG = Options.IR_COMPILER_DEBUG.load();
-    public static boolean IR_PERSISTENCE = Options.IR_PERSISTENCE.load();
-    public static boolean IR_READING = Options.IR_READING.load(); 
+    public static boolean IR_WRITING = Options.IR_WRITING.load();
+    public static boolean IR_READING = Options.IR_READING.load();
+    public static boolean IR_READING_DEBUG = Options.IR_READING_DEBUG.load();
+    public static boolean IR_WRITING_DEBUG = Options.IR_WRITING_DEBUG.load();
     public static boolean IR_VISUALIZER = Options.IR_VISUALIZER.load();
+    public static boolean IR_UNBOXING = Options.IR_UNBOXING.load();
     public static String IR_COMPILER_PASSES = Options.IR_COMPILER_PASSES.load();
+    public static String IR_JIT_PASSES = Options.IR_JIT_PASSES.load();
     public static String IR_INLINE_COMPILER_PASSES = Options.IR_INLINE_COMPILER_PASSES.load();
     
     public static final boolean COROUTINE_FIBERS = Options.FIBER_COROUTINES.load();

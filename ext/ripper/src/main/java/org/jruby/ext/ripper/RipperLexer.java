@@ -237,7 +237,7 @@ public class RipperLexer {
     public boolean commandStart;
 
     // Give a name to a value.  Enebo: This should be used more.
-    static final int EOF = -1;
+    static final int EOF = -1; // 0 in MRI
 
     // ruby constants for strings (should this be moved somewhere else?)
     static final int STR_FUNC_ESCAPE=0x01;
@@ -443,27 +443,13 @@ public class RipperLexer {
     // FIXME: This is our main lexer code mangled into here...
     // Super slow codepoint reader when we detect non-asci chars
     public int readCodepoint(int first, Encoding encoding) throws IOException {
-        int count = 0;
-        byte[] value = new byte[6];
-
-        // We know this will never be EOF
-        value[0] = (byte) first;
-
-        for (count = 1; count < 6; count++) {
-            int c = nextc();
-            if (c == EOF) break; // Maybe we have enough bytes read to mbc at EOF.
-            value[count] = (byte) c;
-        }
-
-        int length = encoding.length(value, 0, count);
+        int length = encoding.length(lexb.getUnsafeBytes(), lex_p - 1, lex_pend);
         if (length < 0) {
-            return -2; // TODO: Hack
+            return -2;
         }
-
-        int codepoint = encoding.mbcToCode(value, 0, length);
-        for (int i = count - 1; i >= length; i--) {
-            pushback(value[i]);
-        }
+        int codepoint = encoding.mbcToCode(lexb.getUnsafeBytes(), lex_p - 1, length);
+        
+        lex_p += length - 1;
 
         return codepoint;
     }
@@ -658,6 +644,10 @@ public class RipperLexer {
     private boolean isARG() {
         return lex_state == LexState.EXPR_ARG || lex_state == LexState.EXPR_CMDARG;
     }
+    
+    private boolean isLabelPossible(boolean commandState) {
+        return ((lex_state == LexState.EXPR_BEG || lex_state == LexState.EXPR_ENDFN) && !commandState) || isARG();
+    }    
     
     private boolean isSpaceArg(int c, boolean spaceSeen) {
         return isARG() && spaceSeen && !Character.isWhitespace(c);
@@ -1133,7 +1123,7 @@ public class RipperLexer {
             case Tokens.tLABEL: return "tLABEL("+ ((Token) value()).getValue() +":),";
             case '\n': return "NL";
             case EOF: return "EOF";
-            default: return "'" + (char)token + "',";
+            default: return "'" + (char)token + " [" + (int) token + "',";
         }
     }
     
@@ -1379,7 +1369,7 @@ public class RipperLexer {
             case '\004': /* ^D */
             case '\032': /* ^Z */
             case EOF:	 /* end of script. */
-                return EOF;
+                return 0;
            
                 /* white spaces */
             case ' ': case '\t': case '\f': case '\r':
@@ -2015,8 +2005,7 @@ public class RipperLexer {
 
         String tempVal = tokenBuffer.toString().intern();
 
-	    if ((lex_state == LexState.EXPR_BEG && !commandState) ||
-                lex_state == LexState.EXPR_ARG || lex_state == LexState.EXPR_CMDARG) {
+        if (isLabelPossible(commandState)) {        
             int c2 = nextc();
             if (c2 == ':' && !peek(':')) {
                 setState(LexState.EXPR_BEG);
@@ -2054,7 +2043,7 @@ public class RipperLexer {
 
         if (isBEG() || lex_state == LexState.EXPR_DOT || isARG()) {
             setState(commandState ? LexState.EXPR_CMDARG : LexState.EXPR_ARG);
-        } else if (lex_state == LexState.EXPR_ENDFN) {
+        } else if (lex_state == LexState.EXPR_FNAME) {
             setState(LexState.EXPR_ENDFN);
         } else {
             setState(LexState.EXPR_END);
@@ -2730,6 +2719,7 @@ public class RipperLexer {
     // to grow by 6 (which may be wasteful).  Another idea is to make Encoding accept an interface
     // for populating bytes and then make ByteList implement that interface.  I like this last idea
     // since it would not leak bytelist impl details all over the place.
+    // mri: parser_tokadd_mbchar
     public int tokenAddMBC(int codepoint, ByteList buffer) {
         int length = buffer.getEncoding().codeToMbc(codepoint, mbcBuf, 0);
 

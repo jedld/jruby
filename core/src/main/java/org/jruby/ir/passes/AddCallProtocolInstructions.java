@@ -15,12 +15,13 @@ import org.jruby.ir.instructions.PopBindingInstr;
 import org.jruby.ir.instructions.PopFrameInstr;
 import org.jruby.ir.instructions.PushBindingInstr;
 import org.jruby.ir.instructions.PushFrameInstr;
-import org.jruby.ir.instructions.ReceiveExceptionInstr;
+import org.jruby.ir.instructions.ReceiveJRubyExceptionInstr;
 import org.jruby.ir.instructions.ReturnBase;
 import org.jruby.ir.instructions.ThrowExceptionInstr;
 import org.jruby.ir.dataflow.analyses.LiveVariablesProblem;
 import org.jruby.ir.dataflow.analyses.StoreLocalVarPlacementProblem;
 import org.jruby.ir.operands.Label;
+import org.jruby.ir.operands.MethAddr;
 import org.jruby.ir.operands.Variable;
 import org.jruby.ir.representations.BasicBlock;
 import org.jruby.ir.representations.CFG;
@@ -42,13 +43,17 @@ public class AddCallProtocolInstructions extends CompilerPass {
 
     @Override
     public Object execute(IRScope scope, Object... data) {
+        // IRScriptBody do not get explicit call protocol instructions right now.
+        // They dont push/pop a frame and do other special things like run begin/end blocks.
+        // So, for now, they go through the runtime stub in IRScriptBody.
+        //
         // SSS FIXME: Right now, we always add push/pop frame instrs -- in the future, we may skip them
         // for certain scopes.
         //
         // Add explicit frame and binding push/pop instrs ONLY for methods -- we cannot handle this in closures and evals yet
         // If the scope uses $_ or $~ family of vars, has local load/stores, or if its binding has escaped, we have
         // to allocate a dynamic scope for it and add binding push/pop instructions.
-        if (scope instanceof IRMethod || scope instanceof IRScriptBody || scope instanceof IRModuleBody) {
+        if (scope instanceof IRMethod || scope instanceof IRModuleBody) {
             StoreLocalVarPlacementProblem slvpp = (StoreLocalVarPlacementProblem)scope.getDataFlowSolution(StoreLocalVarPlacementProblem.NAME);
 
             boolean scopeHasLocalVarStores      = false;
@@ -86,25 +91,24 @@ public class AddCallProtocolInstructions extends CompilerPass {
             boolean requireBinding = bindingHasEscaped || scopeHasLocalVarStores;
             if (scope.usesBackrefOrLastline() || requireBinding || scopeHasUnrescuedExceptions) {
                 // Push
-                entryBB.addInstr(new PushFrameInstr());
+                entryBB.addInstr(new PushFrameInstr(new MethAddr(scope.getName())));
                 if (requireBinding) entryBB.addInstr(new PushBindingInstr(scope));
 
                 // Allocate GEB if necessary for popping
                 if (geb == null && scopeHasUnrescuedExceptions) {
                     Variable exc = scope.getNewTemporaryVariable();
-                    geb = new BasicBlock(cfg, new Label("_GLOBAL_ENSURE_BLOCK"));
-                    geb.addInstr(new ReceiveExceptionInstr(exc, false)); // No need to check type since it is not used before rethrowing
+                    geb = new BasicBlock(cfg, new Label("_GLOBAL_ENSURE_BLOCK", 0));
+                    geb.addInstr(new ReceiveJRubyExceptionInstr(exc)); // JRuby Implementation exception handling
                     geb.addInstr(new ThrowExceptionInstr(exc));
                     cfg.addGlobalEnsureBB(geb);
                 }
 
                 // Pop on all scope-exit paths
-                BasicBlock exitBB = cfg.getExitBB();
                 for (BasicBlock bb: cfg.getBasicBlocks()) {
                     ListIterator<Instr> instrs = bb.getInstrs().listIterator();
                     while (instrs.hasNext()) {
                         Instr i = instrs.next();
-                        if ((bb != exitBB) && (i instanceof ReturnBase) || (i instanceof BreakInstr)) {
+                        if (!bb.isExitBB() && (i instanceof ReturnBase) || (i instanceof BreakInstr)) {
                             // Add before the break/return
                             instrs.previous();
                             if (requireBinding) instrs.add(new PopBindingInstr());
@@ -113,7 +117,7 @@ public class AddCallProtocolInstructions extends CompilerPass {
                         }
                     }
 
-                    if (bb == exitBB && !bb.isEmpty()) {
+                    if (bb.isExitBB() && !bb.isEmpty()) {
                         // Last instr could be a return -- so, move iterator one position back
                         if (instrs.hasPrevious()) instrs.previous();
                         if (requireBinding) instrs.add(new PopBindingInstr());
@@ -130,7 +134,7 @@ public class AddCallProtocolInstructions extends CompilerPass {
             }
 
             // This scope has an explicit call protocol flag now
-            scope.setExplicitCallProtocolFlag(true);
+            scope.setExplicitCallProtocolFlag();
         }
 
         // FIXME: Useless for now

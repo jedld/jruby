@@ -1,5 +1,7 @@
 package org.jruby.ir.instructions;
 
+import org.jruby.ir.IRFlags;
+import org.jruby.ir.IRScope;
 import org.jruby.ir.IRVisitor;
 import org.jruby.ir.Operation;
 import org.jruby.ir.operands.Operand;
@@ -35,8 +37,15 @@ public class ReceiveClosureInstr extends Instr implements ResultInstr, FixedArit
     }
 
     @Override
+    public boolean computeScopeFlags(IRScope scope) {
+        scope.getFlags().add(IRFlags.RECEIVES_CLOSURE_ARG);
+        return true;
+    }
+
+    @Override
     public Instr cloneForInlining(InlinerInfo ii) {
         switch (ii.getCloneMode()) {
+            case ENSURE_BLOCK_CLONE:
             case NORMAL_CLONE:
                 return new ReceiveClosureInstr(ii.getRenamedVariable(result));
             case METHOD_INLINE:
